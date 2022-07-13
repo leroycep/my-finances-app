@@ -1,0 +1,65 @@
+{
+  "nodes": {
+    "flake-utils": {
+      "locked": {
+        "lastModified": 1652776076,
+        "narHash": "sha256-gzTw/v1vj4dOVbpBSJX4J0DwUR6LIyXo7/SuuTJp1kM=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "04c1b180862888302ddfb2e3ad9eaa63afc60cf8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "ref": "v1.0.0",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1657654771,
+        "narHash": "sha256-uIGbt+rU89aTlSx8+4g9vKioWc8nmCCcaaFCNPHM07c=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "4aceab3cadf9fef6f70b9f6a9df964218650db0a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-22.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "zig-master": "zig-master"
+      }
+    },
+    "zig-master": {
+      "inputs": {
+        "flake-utils": "flake-utils",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1657675052,
+        "narHash": "sha256-tsbJjYgHH+WsqRgOxqJd3//7EVC0qlzx+7th/OFNi9o=",
+        "owner": "jessestricker",
+        "repo": "zig-master.nix",
+        "rev": "e0b0e69b26f033c8de62d169ed09df85abc1c207",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jessestricker",
+        "repo": "zig-master.nix",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
