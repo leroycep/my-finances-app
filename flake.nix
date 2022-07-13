@@ -53,7 +53,7 @@
   in rec {
     devShell.x86_64-linux = pkgs.mkShell {
       buildInputs = [
-        zig-master.packages.x86_64-linux.zig
+        pkgs.zig
         pkgs.zls
         nixpkgs.legacyPackages.x86_64-linux.python3
         nixpkgs.legacyPackages.x86_64-linux.python3Packages.ofxparse
