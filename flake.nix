@@ -5,12 +5,17 @@
       url = "github:jessestricker/zig-master.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    sqlite-zig = {
+      url = "github:leroycep/sqlite-zig/sqlite-v3.37.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
     zig-master,
+    sqlite-zig
   }: let
     system = "x86_64-linux";
 
@@ -51,12 +56,40 @@
       ];
     };
   in rec {
+    packages.x86_64-linux.default = packages.x86_64-linux.my-finances-app;
+    packages.x86_64-linux.my-finances-app = pkgs.stdenv.mkDerivation {
+      pname = "my-finances-app";
+      version = "dev";
+      src = ./.;
+
+      buildInputs = [
+        sqlite-zig.packages.x86_64-linux.sqlite-zig
+      ];
+
+      nativeBuildInputs = [
+        pkgs.zig
+        sqlite-zig.packages.x86_64-linux.sqlite-zig
+      ];
+
+      buildPhase = ''
+        zig build-lib ${sqlite-zig.packages.x86_64-linux.sqlite-zig}/sqlite.c -lc -static --global-cache-dir zig-global-cache
+        zig build-exe src/main.zig ${sqlite-zig.packages.x86_64-linux.sqlite-zig}/sqlite.c -lc --pkg-begin sqlite3 ${sqlite-zig.packages.x86_64-linux.sqlite-zig}/sqlite3.zig --pkg-end -static --global-cache-dir zig-global-cache
+      '';
+
+      installPhase = ''
+        mkdir -p $out/bin
+        cp main $out/bin/my-finances-app
+      '';
+    };
+
     devShell.x86_64-linux = pkgs.mkShell {
       buildInputs = [
         pkgs.zig
         pkgs.zls
-        nixpkgs.legacyPackages.x86_64-linux.python3
-        nixpkgs.legacyPackages.x86_64-linux.python3Packages.ofxparse
+        pkgs.python3
+        pkgs.python3Packages.ofxparse
+        pkgs.sqlite
+        sqlite-zig.packages.x86_64-linux.sqlite-zig
       ];
     };
 

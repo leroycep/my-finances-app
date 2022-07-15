@@ -35,7 +35,29 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "sqlite-zig": "sqlite-zig",
         "zig-master": "zig-master"
+      }
+    },
+    "sqlite-zig": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1657769148,
+        "narHash": "sha256-lOK8uwCFkfLdobua/Yhjgv6WbWuMV7XvWR9G0zSbCzE=",
+        "owner": "leroycep",
+        "repo": "sqlite-zig",
+        "rev": "55c0a1323bec966b38081775474d6f07c1646f01",
+        "type": "github"
+      },
+      "original": {
+        "owner": "leroycep",
+        "ref": "sqlite-v3.37.0",
+        "repo": "sqlite-zig",
+        "type": "github"
       }
     },
     "zig-master": {
@@ -46,11 +68,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1657675052,
-        "narHash": "sha256-tsbJjYgHH+WsqRgOxqJd3//7EVC0qlzx+7th/OFNi9o=",
+        "lastModified": 1657761794,
+        "narHash": "sha256-hS5ucexKorfN7QAvxYN+wiofRpK7z2kHQoiCzsfUzQM=",
         "owner": "jessestricker",
         "repo": "zig-master.nix",
-        "rev": "e0b0e69b26f033c8de62d169ed09df85abc1c207",
+        "rev": "fb650737cfb78c3311982b5414005e0daf8ee2d7",
         "type": "github"
       },
       "original": {
