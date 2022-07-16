@@ -1,0 +1,24 @@
+table {
+  font-variant-numeric: lining-nums tabular-nums;
+  border-collapse: collapse;
+  border-top: 1px solid black;
+  border-bottom: 1px solid black;
+}
+tr { vertical-align: top; }
+
+.it { font-style: italic; }
+.bold { font-weight: bold; }
+.align-start { text-align: end; }
+.align-center { text-align: end; }
+.align-end { text-align: end; }
+
+
+.error { background-color: #ffcccb; }
+
+thead,
+.heading {
+  border-top: 1px solid black;
+  border-bottom: 1px solid black;
+  background-color: lightgrey;
+}
+.error .heading { background-color: #FF6461; }

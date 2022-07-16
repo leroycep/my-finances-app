@@ -1,0 +1,2 @@
+include my_finances_app/schema.sql
+include my_finances_app/www/*
