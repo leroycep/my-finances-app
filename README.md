@@ -4,5 +4,5 @@
 Using `nix` with flakes installed:
 
 ```sh
-nix flake run github:leroycep/my-finances-app
+nix run github:leroycep/my-finances-app
 ```
