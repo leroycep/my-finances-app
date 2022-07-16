@@ -22,7 +22,6 @@
       propagatedBuildInputs = [
           (let
             my-python-packages = py-pkgs: [
-              py-pkgs.setuptools
               py-pkgs.ofxparse
             ];
           in
