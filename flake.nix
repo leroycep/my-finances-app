@@ -1,34 +1,63 @@
+
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-22.05";
+    flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay.url = "github:arqv/zig-overlay";
+    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    nix-zig-builder.url = "github:leroycep/nix-zig-builder";
+    nix-zig-builder.inputs.nixpkgs.follows = "nixpkgs";
+
+    apple_pie = {
+      url = "github:Luukdegram/apple_pie";
+      flake = false;
+    };
+    sqlite-zig = {
+      url = "github:leroycep/sqlite-zig/sqlite-v3.37.0";
+      flake = false;
+    };
   };
 
   outputs = {
     self,
-    nixpkgs
-  }: let
-    system = "x86_64-linux";
-    pkgs = import nixpkgs {
-      inherit system;
-    };
-  in rec {
-    packages.x86_64-linux.default = packages.x86_64-linux.my-finances-app;
-    packages.x86_64-linux.my-finances-app = pkgs.python3Packages.buildPythonApplication {
-      pname = "my_finances_app";
-      version = "0.0.1";
-      src = ./.;
-      format = "pyproject";
-
-      propagatedBuildInputs = [
-          (let
-            my-python-packages = py-pkgs: [
-              py-pkgs.ofxparse
-            ];
-          in
-            pkgs.python3.withPackages my-python-packages)
+    nixpkgs,
+    flake-utils,
+    zig-overlay,
+    nix-zig-builder,
+    apple_pie,
+    sqlite-zig,
+  }:
+    flake-utils.lib.eachDefaultSystem (system: let
+      pkgs = import nixpkgs {inherit system;};
+      zig = zig-overlay.packages.${system}.master.latest;
+      zig-builder = nix-zig-builder.packages.${system}.zig-builder;
+      zigPackages = pkgs.lib.concatStringsSep "\n" [
+        "apple_pie=${apple_pie}/src/apple_pie.zig"
+        "sqlite3=${sqlite-zig}/src/sqlite3.zig"
       ];
-    };
+      sqlite3Src = "${sqlite-zig}/src/sqlite3.c";
+    in rec {
+      packages.default = packages.my-finances-app;
+      packages.my-finances-app = derivation {
+        name = "my-finances-app-server";
+        src = ./.;
+        inherit system;
+        inherit zig zigPackages sqlite3Src;
 
-    formatter.${system} = pkgs.alejandra;
-  };
+        builder = "${zig-builder}/bin/zig-builder";
+        args = ["install"];
+      };
+
+      devShell = pkgs.mkShell {
+        name = "my-finances-app-devshell";
+
+        nativeBuildInputs = [
+          zig pkgs.entr
+        ];
+
+        inherit zigPackages sqlite3Src;
+      };
+
+      formatter = pkgs.alejandra;
+    });
 }

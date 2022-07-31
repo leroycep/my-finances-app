@@ -1,9 +1,0 @@
-[project]
-name = "my_finances_app"
-version = "0.0.1"
-dependencies = [
-  "ofxparse"
-]
-
-[project.scripts]
-my_finances_app = "my_finances_app:main"

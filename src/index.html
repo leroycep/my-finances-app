@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<meta charset="utf-8">
+<title>My Finances App</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/static/htmx.min.js"></script>
+<script src="/static/_hyperscript.min.js"></script>
+<link rel="stylesheet" type="text/css" href="/static/tachyons.min.css">
+<link rel="stylesheet" type="text/css" href="/static/style.css">
+
+<body>
+
+<nav>
+  <ul>
+    <li><a href="/currencies">/currencies</a>
+    <li><a href="/account">/account</a>
+    <li><a href="/rule/payee">/rule/payee</a>
+    <li><a href="/transactions">/transactions</a>
+    <li><a href="/assertions/balance">/assertions/balance</a>
+  </ul>
+</nav>
+
+<h2>Currencies</h2>
+<div hx-get="/currencies" hx-trigger="load"></div>
+
+</body>
+</html>

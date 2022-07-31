@@ -1,0 +1,9 @@
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE currencies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    day_opened INTEGER NOT NULL,
+    divisor INTEGER NOT NULL
+) STRICT;
+
