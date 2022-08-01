@@ -4,6 +4,8 @@ pub const io_mode = .evented;
 const sqlite3 = @import("sqlite3");
 const sqlite_utils = @import("./sqlite-utils.zig");
 const date_util = @import("./date.zig");
+const ofx_sgml = @import("./ofx_sgml.zig");
+const multipart_form_data = @import("./multipart-form-data.zig");
 
 const Transaction = sqlite_utils.Transaction;
 
@@ -51,6 +53,7 @@ pub fn main() anyerror!void {
         comptime http.router.Router(*Context, &.{
             builder.get("/", index),
             builder.get("/currencies", getCurrencies),
+            builder.post("/ofx", importOFX),
             //builder.get("/accounts", getAccounts),
             //builder.post("/accounts", postAccount),
             //builder.get("/rules/payee", getPayeeRules),
@@ -75,7 +78,6 @@ fn index(ctx: *Context, res: *http.Response, req: http.Request) !void {
 }
 
 fn getCurrencies(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    _ = ctx;
     _ = req;
 
     var out = res.writer();
@@ -107,6 +109,43 @@ fn getCurrencies(ctx: *Context, res: *http.Response, req: http.Request) !void {
     try out.writeAll(
         \\</tbody>
         \\</table>
+        \\</body>
+        \\</html>
+    );
+}
+
+fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
+    var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer arena.deinit();
+
+    const headers = try req.headers(arena.allocator());
+    var multipart_iter = try multipart_form_data.parse(headers.get("Content-Type"), req.body());
+
+    const src = while (try multipart_iter.next()) |part| {
+        const form_name = part.formName() orelse continue;
+        if (std.mem.eql(u8, "file", std.mem.trim(u8, form_name, "\""))) {
+            break part.body;
+        }
+    } else {
+        return error.InvalidInput; // TODO: Error 40x when input is invalid
+    };
+
+    const tokens = try ofx_sgml.tokenize(arena.allocator(), src);
+
+    try res.headers.put("Content-Type", "text/html");
+    var out = res.writer();
+
+    try writeHTMLHeader(out, "Import OFX");
+
+    try out.writeAll(
+        \\<pre>
+    );
+    for (tokens) |token| {
+        try out.print("{}<br>", .{token.fmtWithSrc(src)});
+    }
+
+    try out.writeAll(
+        \\</pre>
         \\</body>
         \\</html>
     );

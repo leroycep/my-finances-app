@@ -24,5 +24,11 @@
 <h2>Currencies</h2>
 <div hx-get="/currencies" hx-trigger="load"></div>
 
+<h2>Import OFX</h2>
+<form method="POST" action="/ofx" enctype="multipart/form-data">
+<input name="file" type="file"/>
+<button>Import</button>
+</form>
+
 </body>
 </html>
