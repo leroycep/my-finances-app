@@ -21,7 +21,7 @@ CREATE TABLE ofx_accounts (
 ) STRICT;
 
 CREATE TABLE ofx_account_names (
-    account_id INTEGER NOT NULL UNIQUE,
+    account_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
 
     FOREIGN KEY (account_id) REFERENCES ofx_accounts(id)

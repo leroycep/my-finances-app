@@ -268,7 +268,15 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
     try out.writeAll(
         \\<table>
         \\<thead>
-        \\<tr><th class="align-end">Posted</th><th class="align-start">Account</th><th class="align-end">Expectation</th><th class="align-end">Latest Balance Date</th><th class="align-end">Actual</th><th class="align-start">CUR</th></tr>
+        \\<tr>
+        \\  <th class="align-end">Posted</th>
+        \\  <th class="align-start">Account</th>
+        \\  <th class="align-end">Expectation</th>
+        \\  <th class="align-end">Latest Balance Date</th>
+        \\  <th class="align-end">Actual</th>
+        \\  <th class="align-start">CUR</th>
+        \\  <th class="align-end">Difference</th>
+        \\</tr>
         \\</thead>
         \\<tbody>
     );
@@ -301,7 +309,8 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
         const currency_name = stmt.columnText(5);
         const currency_divisor = stmt.columnInt64(6);
 
-        if (ledger_balance == running_balance) {
+        const difference = ledger_balance - running_balance;
+        if (difference == 0) {
             try out.print(
                 \\<tr>
                 \\  <td class="align-end">{}</td>
@@ -310,6 +319,7 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
                 \\  <td class="align-end">{}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
                 \\  <td class="align-start">{s}</td>
+                \\  <td class="align-end"></td>
                 \\</tr>
             , .{
                 day_posted.fmtISO(),
@@ -330,6 +340,7 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
                 \\  <td class="align-end">{}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
                 \\  <td class="align-start">{s}</td>
+                \\  <td class="align-end">{}.{:0>2}</td>
                 \\</tr>
             , .{
                 day_posted.fmtISO(),
@@ -340,6 +351,8 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
                 @divTrunc(running_balance, currency_divisor),
                 @intCast(u64, @mod(running_balance, currency_divisor)),
                 currency_name,
+                @divTrunc(difference, currency_divisor),
+                @intCast(u64, @mod(difference, currency_divisor)),
             });
         }
     }
