@@ -9,6 +9,7 @@ pub const Event = union(enum) {
     start_other: Loc,
     close_other: Loc,
 
+    curdef: Loc,
     bankid: Loc,
     acctid: Loc,
     accttype: Loc,
@@ -69,6 +70,11 @@ pub const Event = union(enum) {
 
                 .bankid,
                 .acctid,
+                => try writer.print("{s} [REDACTED]", .{
+                    std.meta.tagName(this.event),
+                }),
+
+                .curdef,
                 .accttype,
                 .trntype,
                 .dtposted,
@@ -227,6 +233,8 @@ fn parsePropertyElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList
         try events.append(.{ .acctid = value_loc });
     } else if (std.mem.eql(u8, element_name, "ACCTTYPE")) {
         try events.append(.{ .accttype = value_loc });
+    } else if (std.mem.eql(u8, element_name, "CURDEF")) {
+        try events.append(.{ .curdef = value_loc });
     } else {
         return error.UnrecognizedPropertyName;
     }

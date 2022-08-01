@@ -23,8 +23,8 @@ tr { vertical-align: top; }
 
 .it { font-style: italic; }
 .bold { font-weight: bold; }
-.align-start { text-align: end; }
-.align-center { text-align: end; }
+.align-start { text-align: start; }
+.align-center { text-align: center; }
 .align-end { text-align: end; }
 
 

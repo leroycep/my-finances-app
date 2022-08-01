@@ -7,3 +7,30 @@ CREATE TABLE currencies (
     divisor INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE ofx_banks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hash TEXT NOT NULL UNIQUE
+) STRICT;
+
+CREATE TABLE ofx_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_id INTEGER NOT NULL,
+    hash TEXT NOT NULL UNIQUE,
+    name TEXT,
+
+    FOREIGN KEY (bank_id) REFERENCES ofx_banks(id)
+) STRICT;
+
+CREATE TABLE ofx_transactions (
+    account_id INTEGER NOT NULL,
+    id INTEGER NOT NULL,
+    day_posted INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    currency_id INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    
+    FOREIGN KEY (account_id) REFERENCES ofx_accounts(id),
+    FOREIGN KEY (currency_id) REFERENCES currencies(id),
+    PRIMARY KEY (account_id, id)
+) STRICT;
+
