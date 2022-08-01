@@ -24,6 +24,9 @@
 <h2>Currencies</h2>
 <div hx-get="/currencies" hx-trigger="load"></div>
 
+<h2>OFX Accounts</h2>
+<div hx-get="/ofx/accounts" hx-trigger="load"></div>
+
 <h2>Import OFX</h2>
 <form method="POST" action="/ofx" enctype="multipart/form-data">
 <input name="file" type="file"/>

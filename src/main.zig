@@ -45,6 +45,7 @@ pub fn main() anyerror!void {
 
     const builder = http.router.Builder(*Context);
 
+    @setEvalBranchQuota(10000);
     std.log.info("Serving on http://{s}:{}", .{ "127.0.0.1", DEFAULT_PORT });
     try http.listenAndServe(
         gpa.allocator(),
@@ -54,6 +55,9 @@ pub fn main() anyerror!void {
             builder.get("/", index),
             builder.get("/currencies", getCurrencies),
             builder.get("/ofx/transactions", getOFXTransactions),
+            builder.get("/ofx/accounts", getOFXAccounts),
+            builder.get("/ofx/accounts/:account_id", getOFXAccount),
+            builder.put("/ofx/accounts/:account_id", putOFXAccount),
             builder.post("/ofx", importOFX),
             //builder.get("/accounts", getAccounts),
             //builder.post("/accounts", postAccount),
@@ -115,13 +119,149 @@ fn getCurrencies(ctx: *Context, res: *http.Response, req: http.Request) !void {
     );
 }
 
+fn getOFXAccounts(ctx: *Context, res: *http.Response, req: http.Request) !void {
+    _ = req;
+
+    var out = res.writer();
+
+    try res.headers.put("Content-Type", "text/html");
+    try writeHTMLHeader(out, "Accounts");
+
+    try out.writeAll(
+        \\<table>
+        \\<thead>
+        \\<tr><th class="align-start">OFX Account Hash</th><th class="align-start">Account</th></tr>
+        \\</thead>
+        \\<tbody>
+    );
+
+    var stmt = (try ctx.db.prepare_v2(
+        \\SELECT ofx_accounts.id, ofx_accounts.hash, ofx_account_names.name
+        \\FROM ofx_accounts
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_accounts.id
+    , null)) orelse return error.NoStatement;
+    defer stmt.finalize() catch {};
+    while ((try stmt.step()) != .Done) {
+        // TODO: sqlite3 fix `columnText` null pointer seg fault
+        const account_id = stmt.columnInt64(0);
+        const ofx_hash = stmt.columnText(1);
+        const account_name = @ptrCast(?[*:0]const u8, stmt.sqlite3_column_text(2));
+        // TODO: Escape note text
+        try out.print(
+            \\<tr><td class="align-start"><a href="/ofx/accounts/{}">{s}</a></td><td class="align-start">
+        , .{ account_id, ofx_hash });
+        if (account_name) |name| {
+            try out.print(
+                \\<a href="/accounts/{}">{s}</a>
+            , .{ std.zig.fmtEscapes(std.mem.span(name)), name });
+        } else {
+            try out.writeAll("null");
+        }
+        try out.writeAll("</td></tr>");
+    }
+
+    try out.writeAll(
+        \\</tbody>
+        \\</table>
+        \\</body>
+        \\</html>
+    );
+}
+
+fn getOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures: struct { account_id: []const u8 }) !void {
+    _ = req;
+
+    const account_id = try std.fmt.parseInt(i64, captures.account_id, 10);
+
+    var out = res.writer();
+
+    try res.headers.put("Content-Type", "text/html");
+    try writeHTMLHeader(out, "OFX Account");
+
+    try out.writeAll(
+        \\<table>
+    );
+
+    var stmt = (try ctx.db.prepare_v2(
+        \\SELECT ofx_accounts.hash, name
+        \\FROM ofx_accounts
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_accounts.id
+        \\WHERE ofx_accounts.id = ?
+    , null)) orelse return error.NoStatement;
+    defer stmt.finalize() catch {};
+    try stmt.bindInt64(1, account_id);
+    while ((try stmt.step()) != .Done) {
+        const ofx_hash = stmt.columnText(0);
+        const account_name = @ptrCast(?[*:0]const u8, stmt.sqlite3_column_text(1));
+        try out.print(
+            \\<tr><th>Hash</th><td><a href="/ofx/accounts/{}">{s}</a></tr>
+        , .{ std.zig.fmtEscapes(ofx_hash), ofx_hash });
+
+        try out.print(
+            \\<tr><th>Account</th><td>
+        , .{});
+        if (account_name) |name| {
+            try out.print(
+                \\<a href="/accounts/{}">{s}</a>
+            , .{ std.zig.fmtEscapes(std.mem.span(name)), name });
+        } else {
+            try out.print(
+                \\<form>
+                \\<input type="text" name="ofx-account-name" />
+                \\<button hx-put="/ofx/accounts/{}">Submit</button>
+                \\</form>
+            , .{account_id});
+        }
+        try out.writeAll("</td></tr>");
+    }
+
+    try out.writeAll(
+        \\</table>
+        \\</body>
+        \\</html>
+    );
+}
+
+fn putOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures: struct { account_id: []const u8 }) !void {
+    _ = req;
+
+    const account_id = try std.fmt.parseInt(i64, captures.account_id, 10);
+    const account_name_opt = try req.formValue(ctx.allocator, "ofx-account-name");
+    defer if (account_name_opt) |account_name| ctx.allocator.free(account_name);
+
+    var out = res.writer();
+
+    try res.headers.put("Content-Type", "text/html");
+    try writeHTMLHeader(out, "OFX Account");
+
+    if (account_name_opt) |account_name| {
+        var stmt = (try ctx.db.prepare_v2(
+            \\INSERT INTO ofx_account_names(account_id, name) VALUES (?, ?)
+            \\ON CONFLICT(account_id) DO UPDATE SET name=excluded.name;
+        , null)) orelse return error.NoStatement;
+        defer stmt.finalize() catch {};
+        try stmt.bindInt64(1, account_id);
+        try stmt.bindText(2, account_name, .transient);
+        while ((try stmt.step()) != .Done) {}
+
+        try out.print(
+            \\<div>Account {}'s name set to {s}</div>
+        , .{ account_id, account_name });
+    }
+
+    try out.writeAll(
+        \\</body>
+        \\</html>
+    );
+}
+
 fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !void {
     _ = req;
 
     var out = res.writer();
 
     try res.headers.put("Content-Type", "text/html");
-    try writeHTMLHeader(out, "Currencies");
+    try writeHTMLHeader(out, "OFX Transactions");
 
     try out.writeAll(
         \\<table>
@@ -133,17 +273,18 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
 
     var stmt = (try ctx.db.prepare_v2(
         \\SELECT
-        \\  account_id,
+        \\  ofx_transactions.account_id,
         \\  ofx_transactions.id,
         \\  day_posted,
-        \\  COALESCE(ofx_accounts.name, ofx_accounts.hash),
+        \\  COALESCE(ofx_account_names.name, ofx_accounts.hash),
         \\  amount,
         \\  currencies.name,
         \\  currencies.divisor,
         \\  description
         \\FROM ofx_transactions
-        \\LEFT JOIN ofx_accounts ON ofx_accounts.id = account_id
+        \\LEFT JOIN ofx_accounts ON ofx_accounts.id = ofx_transactions.account_id
         \\LEFT JOIN currencies ON currencies.id = currency_id
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_accounts.id
     , null)) orelse return error.NoStatement;
     defer stmt.finalize() catch {};
     while ((try stmt.step()) != .Done) {
@@ -160,7 +301,7 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
             \\<tr><input type="hidden" name="ofx-account-id" values="{}"/><input type="hidden" name="ofx-transactions-id" values="{}"/>
             \\  <td class="align-end">{}</td>
             \\  <td class="align-start">{s}</td>
-            \\  <td class="align-end">{}.{}</td>
+            \\  <td class="align-end">{}.{:0>2}</td>
             \\  <td class="align-start">{s}</td>
             \\  <td class="align-start">{s}</td>
             \\</tr>
@@ -170,7 +311,7 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
             day_posted.fmtISO(),
             account_hash,
             @divTrunc(amount, currency_divisor),
-            @mod(amount, currency_divisor),
+            @intCast(u64, @mod(amount, currency_divisor)),
             currency_name,
             description,
         });

@@ -16,10 +16,17 @@ CREATE TABLE ofx_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bank_id INTEGER NOT NULL,
     hash TEXT NOT NULL UNIQUE,
-    name TEXT,
 
     FOREIGN KEY (bank_id) REFERENCES ofx_banks(id)
 ) STRICT;
+
+CREATE TABLE ofx_account_names (
+    account_id INTEGER NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE,
+
+    FOREIGN KEY (account_id) REFERENCES ofx_accounts(id)
+) STRICT;
+
 
 CREATE TABLE ofx_transactions (
     account_id INTEGER NOT NULL,
