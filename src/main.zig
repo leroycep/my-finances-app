@@ -362,6 +362,10 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
         name: ?[]const u8 = null,
         memo: ?[]const u8 = null,
     } = undefined;
+    var balance: struct {
+        day_posted: ?i64 = null,
+        amount: ?i64 = null,
+    } = undefined;
     for (ofx_events) |event| {
         if (event.isClose()) indent -|= 1;
 
@@ -405,16 +409,50 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
                 try stmt.bindText(6, transaction.name, .transient);
                 try stmt.bindText(7, transaction.memo, .transient);
                 while ((try stmt.step()) != .Done) {}
+                transaction = undefined;
             },
 
-            else => {
-                var i: usize = 0;
-                while (i < indent) : (i += 1) {
-                    try out.writeAll("\t");
-                }
-                try out.print("{}<br>", .{event.fmtWithSrc(src)});
+            .start_balance => balance = .{},
+            .balamt => |loc| {
+                const text = loc.text(src);
+                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
+                const major_str = text[0..major_str_end];
+                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
+                balance.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
             },
+            .dtasof => |loc| {
+                const text = loc.text(src);
+                if (text.len < 8) continue;
+                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
+                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
+                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
+                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
+                });
+                balance.day_posted = @intCast(i64, julian_day_number);
+            },
+            .close_balance => |kind| {
+                if (kind == .ledger) {
+                    var stmt = (try ctx.db.prepare_v2(
+                        \\INSERT OR IGNORE INTO ofx_ledger_balance(account_id, day_posted, amount, currency_id)
+                        \\VALUES (?, ?, ?, ?)
+                    , null)) orelse return error.NoStatement;
+                    defer stmt.finalize() catch {};
+                    try stmt.bindInt64(1, account_id orelse return error.NoAccountId);
+                    try stmt.bindInt64(2, balance.day_posted orelse return error.NoDayPosted);
+                    try stmt.bindInt64(3, balance.amount orelse return error.NoAmount);
+                    try stmt.bindInt64(4, if (currency) |c| c.id else return error.NoCurrency);
+                    while ((try stmt.step()) != .Done) {}
+                }
+                balance = undefined;
+            },
+
+            else => {},
         }
+        var i: usize = 0;
+        while (i < indent) : (i += 1) {
+            try out.writeAll("\t");
+        }
+        try out.print("{}<br>", .{event.fmtWithSrc(src)});
 
         if (event.isStart()) indent += 1;
     }

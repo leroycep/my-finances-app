@@ -23,10 +23,21 @@ pub const Event = union(enum) {
     name: Loc,
     memo: Loc,
 
+    start_balance: BalanceKind,
+    close_balance: BalanceKind,
+    balamt: Loc,
+    dtasof: Loc,
+
+    const BalanceKind = enum {
+        ledger,
+        available,
+    };
+
     pub fn isStart(this: @This()) bool {
         return switch (this) {
             .start_other,
             .start_stmttrn,
+            .start_balance,
             => true,
             else => false,
         };
@@ -36,6 +47,7 @@ pub const Event = union(enum) {
         return switch (this) {
             .close_other,
             .close_stmttrn,
+            .close_balance,
             => true,
             else => false,
         };
@@ -45,6 +57,7 @@ pub const Event = union(enum) {
         return switch (this) {
             .start_stmttrn => return .close_stmttrn,
             .start_other => |loc| return @This(){ .close_other = loc },
+            .start_balance => |kind| return @This(){ .close_balance = kind },
             else => return null,
         };
     }
@@ -86,9 +99,18 @@ pub const Event = union(enum) {
                 .start_other,
                 .close_other,
                 .flat_element,
+                .balamt,
+                .dtasof,
                 => |loc| try writer.print("{s} \"{}\"", .{
                     std.meta.tagName(this.event),
                     std.zig.fmtEscapes(loc.text(this.src)),
+                }),
+
+                .start_balance,
+                .close_balance,
+                => |balance_kind| try writer.print("{s} {s}", .{
+                    std.meta.tagName(this.event),
+                    std.meta.tagName(balance_kind),
                 }),
             }
         }
@@ -175,6 +197,7 @@ fn parseContainerElement(src: []const u8, cursor: *Cursor, events: *std.ArrayLis
                     const close_element = events.items[element_end_event];
                     const is_match = switch (start_element) {
                         .start_stmttrn => close_element == .close_stmttrn,
+                        .start_balance => close_element == .close_balance and start_element.start_balance == close_element.close_balance,
                         .start_other => |loc| close_element == .close_other and std.mem.eql(u8, loc.text(src), close_element.close_other.text(src)),
                         else => false,
                     };
@@ -235,6 +258,10 @@ fn parsePropertyElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList
         try events.append(.{ .accttype = value_loc });
     } else if (std.mem.eql(u8, element_name, "CURDEF")) {
         try events.append(.{ .curdef = value_loc });
+    } else if (std.mem.eql(u8, element_name, "BALAMT")) {
+        try events.append(.{ .balamt = value_loc });
+    } else if (std.mem.eql(u8, element_name, "DTASOF")) {
+        try events.append(.{ .dtasof = value_loc });
     } else {
         return error.UnrecognizedPropertyName;
     }
@@ -311,8 +338,10 @@ fn parseElementStart(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Ev
     const element_name = cursor.tokens[element_name_token_idx].text(src);
     if (std.mem.eql(u8, element_name, "STMTTRN")) {
         try events.append(.start_stmttrn);
-        //} else if (std.mem.eql(u8, element_name, "STMTTRN")) {
-        //    try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
+    } else if (std.mem.eql(u8, element_name, "LEDGERBAL")) {
+        try events.append(.{ .start_balance = .ledger });
+    } else if (std.mem.eql(u8, element_name, "AVAILBAL")) {
+        try events.append(.{ .start_balance = .available });
     } else {
         try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
     }
@@ -338,8 +367,10 @@ fn parseElementEnd(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Even
     const element_name = cursor.tokens[element_name_token_idx].text(src);
     if (std.mem.eql(u8, element_name, "STMTTRN")) {
         try events.append(.close_stmttrn);
-        //} else if (std.mem.eql(u8, element_name, "STMTTRN")) {
-        //    try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
+    } else if (std.mem.eql(u8, element_name, "LEDGERBAL")) {
+        try events.append(.{ .close_balance = .ledger });
+    } else if (std.mem.eql(u8, element_name, "AVAILBAL")) {
+        try events.append(.{ .close_balance = .available });
     } else {
         try events.append(.{ .close_other = cursor.tokens[element_name_token_idx].loc });
 

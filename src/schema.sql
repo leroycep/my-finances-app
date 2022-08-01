@@ -27,7 +27,6 @@ CREATE TABLE ofx_account_names (
     FOREIGN KEY (account_id) REFERENCES ofx_accounts(id)
 ) STRICT;
 
-
 CREATE TABLE ofx_transactions (
     account_id INTEGER NOT NULL,
     id INTEGER NOT NULL,
@@ -39,5 +38,16 @@ CREATE TABLE ofx_transactions (
     FOREIGN KEY (account_id) REFERENCES ofx_accounts(id),
     FOREIGN KEY (currency_id) REFERENCES currencies(id),
     PRIMARY KEY (account_id, id)
+) STRICT;
+
+CREATE TABLE ofx_ledger_balance (
+    account_id INTEGER NOT NULL,
+    day_posted INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    currency_id INTEGER NOT NULL,
+
+    FOREIGN KEY (account_id) REFERENCES ofx_accounts(id),
+    FOREIGN KEY (currency_id) REFERENCES currencies(id),
+    UNIQUE (account_id, day_posted)
 ) STRICT;
 
