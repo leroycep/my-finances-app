@@ -130,7 +130,7 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
         return error.InvalidInput; // TODO: Error 40x when input is invalid
     };
 
-    const tokens = try ofx_sgml.tokenize(arena.allocator(), src);
+    const ofx_events = try ofx_sgml.parse(arena.allocator(), src);
 
     try res.headers.put("Content-Type", "text/html");
     var out = res.writer();
@@ -140,8 +140,17 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
     try out.writeAll(
         \\<pre>
     );
-    for (tokens) |token| {
-        try out.print("{}<br>", .{token.fmtWithSrc(src)});
+    var indent: usize = 0;
+    for (ofx_events) |event| {
+        if (event == .close_other) indent -|= 1;
+
+        var i: usize = 0;
+        while (i < indent) : (i += 1) {
+            try out.writeAll("\t");
+        }
+        try out.print("{}<br>", .{event.fmtWithSrc(src)});
+
+        if (event == .start_other) indent += 1;
     }
 
     try out.writeAll(
