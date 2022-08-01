@@ -27,10 +27,14 @@
 <h2>OFX Accounts</h2>
 <div hx-get="/ofx/accounts" hx-trigger="load"></div>
 
+<h2>OFX Ledger Balances</h2>
+<div hx-get="/ofx/ledger_balances" hx-trigger="load"></div>
+
 <h2>Import OFX</h2>
 <form method="POST" action="/ofx" enctype="multipart/form-data">
-<input name="file" type="file"/>
+<input name="file" type="file" multiple>
 <button>Import</button>
+<button formaction="/ofx/debug">Debug</button>
 </form>
 
 <h2>OFX Transactions</h2>

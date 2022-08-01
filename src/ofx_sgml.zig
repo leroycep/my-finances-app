@@ -9,6 +9,11 @@ pub const Event = union(enum) {
     start_other: Loc,
     close_other: Loc,
 
+    start_fi,
+    close_fi,
+    fid: Loc,
+    org: Loc,
+
     curdef: Loc,
     bankid: Loc,
     acctid: Loc,
@@ -36,6 +41,7 @@ pub const Event = union(enum) {
     pub fn isStart(this: @This()) bool {
         return switch (this) {
             .start_other,
+            .start_fi,
             .start_stmttrn,
             .start_balance,
             => true,
@@ -46,6 +52,7 @@ pub const Event = union(enum) {
     pub fn isClose(this: @This()) bool {
         return switch (this) {
             .close_other,
+            .close_fi,
             .close_stmttrn,
             .close_balance,
             => true,
@@ -55,6 +62,7 @@ pub const Event = union(enum) {
 
     pub fn getClose(this: @This()) ?@This() {
         return switch (this) {
+            .start_fi => return .close_fi,
             .start_stmttrn => return .close_stmttrn,
             .start_other => |loc| return @This(){ .close_other = loc },
             .start_balance => |kind| return @This(){ .close_balance = kind },
@@ -79,7 +87,11 @@ pub const Event = union(enum) {
             _ = fmt;
             _ = options;
             switch (this.event) {
-                .start_stmttrn, .close_stmttrn => try writer.print("{s}", .{std.meta.tagName(this.event)}),
+                .start_fi,
+                .close_fi,
+                .start_stmttrn,
+                .close_stmttrn,
+                => try writer.print("{s}", .{std.meta.tagName(this.event)}),
 
                 .bankid,
                 .acctid,
@@ -87,6 +99,8 @@ pub const Event = union(enum) {
                     std.meta.tagName(this.event),
                 }),
 
+                .fid,
+                .org,
                 .curdef,
                 .accttype,
                 .trntype,
@@ -154,6 +168,11 @@ const CONTAINER_ELEMENTS = [_][]const u8{
     "AVAILBAL",
     "STMTRS",
     "BANKMSGSRSV1",
+    "CCACCTFROM",
+    "CCSTMTRS",
+    "CCSTMTTRNRS",
+    "CREDITCARDMSGSRSV1",
+    "CCACCTFROM",
 };
 
 fn parseContainerElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Event)) anyerror!void {
@@ -197,6 +216,7 @@ fn parseContainerElement(src: []const u8, cursor: *Cursor, events: *std.ArrayLis
                     const close_element = events.items[element_end_event];
                     const is_match = switch (start_element) {
                         .start_stmttrn => close_element == .close_stmttrn,
+                        .start_fi => close_element == .close_fi,
                         .start_balance => close_element == .close_balance and start_element.start_balance == close_element.close_balance,
                         .start_other => |loc| close_element == .close_other and std.mem.eql(u8, loc.text(src), close_element.close_other.text(src)),
                         else => false,
@@ -262,6 +282,10 @@ fn parsePropertyElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList
         try events.append(.{ .balamt = value_loc });
     } else if (std.mem.eql(u8, element_name, "DTASOF")) {
         try events.append(.{ .dtasof = value_loc });
+    } else if (std.mem.eql(u8, element_name, "ORG")) {
+        try events.append(.{ .org = value_loc });
+    } else if (std.mem.eql(u8, element_name, "FID")) {
+        try events.append(.{ .fid = value_loc });
     } else {
         return error.UnrecognizedPropertyName;
     }
@@ -342,6 +366,8 @@ fn parseElementStart(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Ev
         try events.append(.{ .start_balance = .ledger });
     } else if (std.mem.eql(u8, element_name, "AVAILBAL")) {
         try events.append(.{ .start_balance = .available });
+    } else if (std.mem.eql(u8, element_name, "FI")) {
+        try events.append(.start_fi);
     } else {
         try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
     }
@@ -371,6 +397,8 @@ fn parseElementEnd(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Even
         try events.append(.{ .close_balance = .ledger });
     } else if (std.mem.eql(u8, element_name, "AVAILBAL")) {
         try events.append(.{ .close_balance = .available });
+    } else if (std.mem.eql(u8, element_name, "FI")) {
+        try events.append(.close_fi);
     } else {
         try events.append(.{ .close_other = cursor.tokens[element_name_token_idx].loc });
 

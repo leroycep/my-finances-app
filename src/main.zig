@@ -55,10 +55,12 @@ pub fn main() anyerror!void {
             builder.get("/", index),
             builder.get("/currencies", getCurrencies),
             builder.get("/ofx/transactions", getOFXTransactions),
+            builder.get("/ofx/ledger_balances", getOFXLedgerBalances),
             builder.get("/ofx/accounts", getOFXAccounts),
             builder.get("/ofx/accounts/:account_id", getOFXAccount),
             builder.put("/ofx/accounts/:account_id", putOFXAccount),
-            builder.post("/ofx", importOFX),
+            builder.post("/ofx", postOFX),
+            builder.post("/ofx/debug", debugParseOFX),
             //builder.get("/accounts", getAccounts),
             //builder.post("/accounts", postAccount),
             //builder.get("/rules/payee", getPayeeRules),
@@ -255,6 +257,101 @@ fn putOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures
     );
 }
 
+fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !void {
+    _ = req;
+
+    var out = res.writer();
+
+    try res.headers.put("Content-Type", "text/html");
+    try writeHTMLHeader(out, "OFX Ledger Balances");
+
+    try out.writeAll(
+        \\<table>
+        \\<thead>
+        \\<tr><th class="align-end">Posted</th><th class="align-start">Account</th><th class="align-end">Expectation</th><th class="align-end">Latest Balance Date</th><th class="align-end">Actual</th><th class="align-start">CUR</th></tr>
+        \\</thead>
+        \\<tbody>
+    );
+
+    var stmt = (try ctx.db.prepare_v2(
+        \\SELECT
+        \\  ofx_ledger_balance.day_posted,
+        \\  max(ofx_running_balances.day_posted),
+        \\  COALESCE(ofx_account_names.name, ofx_accounts.hash) AS hash_or_name,
+        \\  ofx_ledger_balance.amount,
+        \\  ofx_running_balances.balance,
+        \\  currencies.name,
+        \\  currencies.divisor
+        \\FROM ofx_ledger_balance
+        \\LEFT JOIN ofx_accounts ON ofx_accounts.id = ofx_ledger_balance.account_id
+        \\LEFT JOIN currencies ON currencies.id = ofx_ledger_balance.currency_id
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_ledger_balance.account_id
+        \\LEFT JOIN ofx_running_balances ON ofx_running_balances.account_id = ofx_ledger_balance.account_id AND (ofx_running_balances.day_posted <= ofx_ledger_balance.day_posted)
+        \\GROUP BY ofx_ledger_balance.day_posted, hash_or_name, ofx_ledger_balance.currency_id
+        \\ORDER BY ofx_ledger_balance.day_posted DESC
+    , null)) orelse return error.NoStatement;
+    defer stmt.finalize() catch {};
+    while ((try stmt.step()) != .Done) {
+        // TODO: sqlite3 fix `columnText` null pointer seg fault
+        const day_posted = date_util.julianDayNumberToGregorianDate(@intCast(u64, stmt.columnInt64(0)));
+        const latest_balance_day = date_util.julianDayNumberToGregorianDate(@intCast(u64, stmt.columnInt64(1)));
+        const account_name = stmt.columnText(2);
+        const ledger_balance = stmt.columnInt64(3);
+        const running_balance = stmt.columnInt64(4);
+        const currency_name = stmt.columnText(5);
+        const currency_divisor = stmt.columnInt64(6);
+
+        if (ledger_balance == running_balance) {
+            try out.print(
+                \\<tr>
+                \\  <td class="align-end">{}</td>
+                \\  <td class="align-start">{s}</td>
+                \\  <td class="align-end">{}.{:0>2}</td>
+                \\  <td class="align-end">{}</td>
+                \\  <td class="align-end">{}.{:0>2}</td>
+                \\  <td class="align-start">{s}</td>
+                \\</tr>
+            , .{
+                day_posted.fmtISO(),
+                account_name,
+                @divTrunc(ledger_balance, currency_divisor),
+                @intCast(u64, @mod(ledger_balance, currency_divisor)),
+                latest_balance_day.fmtISO(),
+                @divTrunc(running_balance, currency_divisor),
+                @intCast(u64, @mod(running_balance, currency_divisor)),
+                currency_name,
+            });
+        } else {
+            try out.print(
+                \\<tr class="error">
+                \\  <td class="align-end">{}</td>
+                \\  <td class="align-start">{s}</td>
+                \\  <td class="align-end">{}.{:0>2}</td>
+                \\  <td class="align-end">{}</td>
+                \\  <td class="align-end">{}.{:0>2}</td>
+                \\  <td class="align-start">{s}</td>
+                \\</tr>
+            , .{
+                day_posted.fmtISO(),
+                account_name,
+                @divTrunc(ledger_balance, currency_divisor),
+                @intCast(u64, @mod(ledger_balance, currency_divisor)),
+                latest_balance_day.fmtISO(),
+                @divTrunc(running_balance, currency_divisor),
+                @intCast(u64, @mod(running_balance, currency_divisor)),
+                currency_name,
+            });
+        }
+    }
+
+    try out.writeAll(
+        \\</tbody>
+        \\</table>
+        \\</body>
+        \\</html>
+    );
+}
+
 fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !void {
     _ = req;
 
@@ -285,6 +382,7 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
         \\LEFT JOIN ofx_accounts ON ofx_accounts.id = ofx_transactions.account_id
         \\LEFT JOIN currencies ON currencies.id = currency_id
         \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_accounts.id
+        \\ORDER BY day_posted DESC
     , null)) orelse return error.NoStatement;
     defer stmt.finalize() catch {};
     while ((try stmt.step()) != .Done) {
@@ -325,7 +423,157 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
     );
 }
 
-fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
+fn postOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
+    var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer arena.deinit();
+
+    var files_imported: usize = 0;
+
+    const headers = try req.headers(arena.allocator());
+    var multipart_iter = try multipart_form_data.parse(headers.get("Content-Type"), req.body());
+
+    var txn = try Transaction.begin(@src(), ctx.db);
+    defer txn.deinit();
+
+    while (try multipart_iter.next()) |part| {
+        const form_name = part.formName() orelse continue;
+        if (std.mem.eql(u8, "file", std.mem.trim(u8, form_name, "\""))) {
+            try importOFXFile(ctx.db, arena.allocator(), part.body);
+            files_imported += 1;
+        }
+    }
+
+    try txn.commit();
+
+    try res.headers.put("Content-Type", "text/html");
+    var out = res.writer();
+
+    try writeHTMLHeader(out, "Import OFX");
+
+    try out.print(
+        \\Successfully imported {} files
+        \\</body>
+        \\</html>
+    , .{files_imported});
+}
+
+fn importOFXFile(db: *sqlite3.SQLite3, allocator: std.mem.Allocator, src: []const u8) !void {
+    var txn = try Transaction.begin(@src(), db);
+    defer txn.deinit();
+
+    const ofx_events = try ofx_sgml.parse(allocator, src);
+    defer allocator.free(ofx_events);
+
+    var stmt_insert_transaction = (try db.prepare_v2(
+        \\INSERT OR IGNORE INTO ofx_transactions(account_id, id, day_posted, amount, currency_id, description)
+        \\VALUES (?, ?, ?, ?, ?, ? || COALESCE(?, ''))
+    , null)) orelse return error.NoStatement;
+    defer stmt_insert_transaction.finalize() catch {};
+
+    var fid: ?[]const u8 = null;
+    var org: ?[]const u8 = null;
+    var account_id: ?i64 = null;
+    var currency: ?Currency = null;
+    var transaction: struct {
+        id: ?[]const u8 = null,
+        day_posted: ?i64 = null,
+        amount: ?i64 = null,
+        name: ?[]const u8 = null,
+        memo: ?[]const u8 = null,
+    } = undefined;
+    var balance: struct {
+        day_posted: ?i64 = null,
+        amount: ?i64 = null,
+    } = undefined;
+    for (ofx_events) |event| {
+        switch (event) {
+            .fid => |loc| fid = loc.text(src),
+            .org => |loc| org = loc.text(src),
+            .close_fi => try putFiOrg(db, fid orelse return error.NoFID, org orelse return error.NoOrg),
+
+            .acctid => |loc| account_id = try getOrPutAccountByHash(db, fid orelse return error.NoBankId, loc.text(src)),
+            .curdef => |loc| currency = try getCurrencyByName(db, loc.text(src)),
+
+            .start_stmttrn => transaction = .{},
+            .fitid => |loc| transaction.id = loc.text(src),
+            .name => |loc| transaction.name = loc.text(src),
+            .memo => |loc| transaction.memo = loc.text(src),
+            .dtposted => |loc| {
+                const text = loc.text(src);
+                if (text.len < 8) continue;
+                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
+                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
+                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
+                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
+                });
+                transaction.day_posted = @intCast(i64, julian_day_number);
+            },
+            .trnamt => |loc| {
+                const text = loc.text(src);
+                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
+                const major_str = text[0..major_str_end];
+                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
+                transaction.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
+            },
+            .close_stmttrn => {
+                try stmt_insert_transaction.reset();
+                try stmt_insert_transaction.bindInt64(1, account_id orelse return error.NoAccountId);
+                try stmt_insert_transaction.bindText(2, transaction.id orelse return error.NoTransactionId, .transient);
+                try stmt_insert_transaction.bindInt64(3, transaction.day_posted orelse return error.NoDayPosted);
+                try stmt_insert_transaction.bindInt64(4, transaction.amount orelse return error.NoAmount);
+                try stmt_insert_transaction.bindInt64(5, if (currency) |c| c.id else return error.NoCurrency);
+                try stmt_insert_transaction.bindText(6, transaction.name, .transient);
+                if (transaction.memo) |memo| {
+                    try stmt_insert_transaction.bindText(7, memo, .transient);
+                } else {
+                    try stmt_insert_transaction.bindNull(7);
+                }
+                while ((try stmt_insert_transaction.step()) != .Done) {}
+                transaction = undefined;
+            },
+
+            .start_balance => balance = .{},
+            .balamt => |loc| {
+                const text = loc.text(src);
+                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
+                const major_str = text[0..major_str_end];
+                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
+                balance.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
+            },
+            .dtasof => |loc| {
+                const text = loc.text(src);
+                if (text.len < 8) continue;
+                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
+                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
+                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
+                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
+                });
+                balance.day_posted = @intCast(i64, julian_day_number);
+            },
+            .close_balance => |kind| {
+                if (kind == .ledger) {
+                    var stmt = (try db.prepare_v2(
+                        \\INSERT OR IGNORE INTO ofx_ledger_balance(account_id, day_posted, amount, currency_id)
+                        \\VALUES (?, ?, ?, ?)
+                    , null)) orelse return error.NoStatement;
+                    defer stmt.finalize() catch {};
+                    try stmt.bindInt64(1, account_id orelse return error.NoAccountId);
+                    try stmt.bindInt64(2, balance.day_posted orelse return error.NoDayPosted);
+                    try stmt.bindInt64(3, balance.amount orelse return error.NoAmount);
+                    try stmt.bindInt64(4, if (currency) |c| c.id else return error.NoCurrency);
+                    while ((try stmt.step()) != .Done) {}
+                }
+                balance = undefined;
+            },
+
+            else => {},
+        }
+    }
+
+    try txn.commit();
+}
+
+fn debugParseOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
     var arena = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena.deinit();
 
@@ -351,103 +599,11 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
     try out.writeAll(
         \\<pre>
     );
+
     var indent: usize = 0;
-    var bank_id: ?i64 = null;
-    var account_id: ?i64 = null;
-    var currency: ?Currency = null;
-    var transaction: struct {
-        id: ?i64 = null,
-        day_posted: ?i64 = null,
-        amount: ?i64 = null,
-        name: ?[]const u8 = null,
-        memo: ?[]const u8 = null,
-    } = undefined;
-    var balance: struct {
-        day_posted: ?i64 = null,
-        amount: ?i64 = null,
-    } = undefined;
     for (ofx_events) |event| {
         if (event.isClose()) indent -|= 1;
 
-        switch (event) {
-            .bankid => |loc| bank_id = try getOrPutBankByHash(ctx, loc.text(src)),
-            .acctid => |loc| account_id = try getOrPutAccountByHash(ctx, loc.text(src), bank_id.?),
-            .curdef => |loc| currency = try getCurrencyByName(ctx, loc.text(src)),
-
-            .start_stmttrn => transaction = .{},
-            .fitid => |loc| transaction.id = try std.fmt.parseInt(i64, loc.text(src), 10),
-            .name => |loc| transaction.name = loc.text(src),
-            .memo => |loc| transaction.memo = loc.text(src),
-            .dtposted => |loc| {
-                const text = loc.text(src);
-                if (text.len < 8) continue;
-                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
-                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
-                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
-                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
-                });
-                transaction.day_posted = @intCast(i64, julian_day_number);
-            },
-            .trnamt => |loc| {
-                const text = loc.text(src);
-                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
-                const major_str = text[0..major_str_end];
-                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
-                transaction.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
-            },
-            .close_stmttrn => {
-                var stmt = (try ctx.db.prepare_v2(
-                    \\INSERT OR IGNORE INTO ofx_transactions(account_id, id, day_posted, amount, currency_id, description)
-                    \\VALUES (?, ?, ?, ?, ?, ? || ?)
-                , null)) orelse return error.NoStatement;
-                defer stmt.finalize() catch {};
-                try stmt.bindInt64(1, account_id orelse return error.NoAccountId);
-                try stmt.bindInt64(2, transaction.id orelse return error.NoTransactionId);
-                try stmt.bindInt64(3, transaction.day_posted orelse return error.NoDayPosted);
-                try stmt.bindInt64(4, transaction.amount orelse return error.NoAmount);
-                try stmt.bindInt64(5, if (currency) |c| c.id else return error.NoCurrency);
-                try stmt.bindText(6, transaction.name, .transient);
-                try stmt.bindText(7, transaction.memo, .transient);
-                while ((try stmt.step()) != .Done) {}
-                transaction = undefined;
-            },
-
-            .start_balance => balance = .{},
-            .balamt => |loc| {
-                const text = loc.text(src);
-                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
-                const major_str = text[0..major_str_end];
-                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
-                balance.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
-            },
-            .dtasof => |loc| {
-                const text = loc.text(src);
-                if (text.len < 8) continue;
-                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
-                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
-                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
-                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
-                });
-                balance.day_posted = @intCast(i64, julian_day_number);
-            },
-            .close_balance => |kind| {
-                if (kind == .ledger) {
-                    var stmt = (try ctx.db.prepare_v2(
-                        \\INSERT OR IGNORE INTO ofx_ledger_balance(account_id, day_posted, amount, currency_id)
-                        \\VALUES (?, ?, ?, ?)
-                    , null)) orelse return error.NoStatement;
-                    defer stmt.finalize() catch {};
-                    try stmt.bindInt64(1, account_id orelse return error.NoAccountId);
-                    try stmt.bindInt64(2, balance.day_posted orelse return error.NoDayPosted);
-                    try stmt.bindInt64(3, balance.amount orelse return error.NoAmount);
-                    try stmt.bindInt64(4, if (currency) |c| c.id else return error.NoCurrency);
-                    while ((try stmt.step()) != .Done) {}
-                }
-                balance = undefined;
-            },
-
-            else => {},
-        }
         var i: usize = 0;
         while (i < indent) : (i += 1) {
             try out.writeAll("\t");
@@ -464,52 +620,40 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
     );
 }
 
-fn getOrPutBankByHash(ctx: *Context, text: []const u8) !i64 {
-    var hash: [16]u8 = undefined;
-    std.crypto.hash.Blake3.hash(text, &hash, .{});
-
-    var hash_buf: [40]u8 = undefined;
-    const hash_str = try std.fmt.bufPrintZ(&hash_buf, "blake3-{}", .{std.fmt.fmtSliceHexLower(&hash)});
-
-    {
-        var stmt = (try ctx.db.prepare_v2("INSERT OR IGNORE INTO ofx_banks(hash) VALUES (?)", null)) orelse return error.NoStatement;
-        defer stmt.finalize() catch {};
-        try stmt.bindText(1, hash_str, .transient);
-        while ((try stmt.step()) != .Done) {}
-    }
-
-    var stmt = (try ctx.db.prepare_v2("SELECT id FROM ofx_banks WHERE hash LIKE ?", null)) orelse return error.NoStatement;
-    try stmt.bindText(1, hash_str, .transient);
-    while ((try stmt.step()) != .Done) {
-        const id = stmt.columnInt64(0);
-        return id;
-    }
-    return error.BankNotFound;
+fn putFiOrg(db: *sqlite3.SQLite3, fid: []const u8, org: []const u8) !void {
+    var stmt = (try db.prepare_v2("INSERT OR IGNORE INTO ofx_financial_institutions(fid, org) VALUES (?, ?)", null)) orelse return error.NoStatement;
+    defer stmt.finalize() catch {};
+    try stmt.bindText(1, fid, .transient);
+    try stmt.bindText(2, org, .transient);
+    while ((try stmt.step()) != .Done) {}
 }
 
-fn getOrPutAccountByHash(ctx: *Context, text: []const u8, bank_id: i64) !i64 {
+fn getOrPutAccountByHash(db: *sqlite3.SQLite3, fid: []const u8, acctid: []const u8) !i64 {
     var hash: [16]u8 = undefined;
-    std.crypto.hash.Blake3.hash(text, &hash, .{});
+    var hasher = std.crypto.hash.Blake3.init(.{});
+    hasher.update(fid);
+    hasher.update(&.{0});
+    hasher.update(acctid);
+    hasher.final(&hash);
 
     var hash_buf: [40]u8 = undefined;
     const hash_str = try std.fmt.bufPrintZ(&hash_buf, "blake3-{}", .{std.fmt.fmtSliceHexLower(&hash)});
 
     {
-        var stmt = (try ctx.db.prepare_v2("INSERT OR IGNORE INTO ofx_accounts(hash, bank_id) VALUES (?, ?)", null)) orelse return error.NoStatement;
+        var stmt = (try db.prepare_v2("INSERT OR IGNORE INTO ofx_accounts(fiid, hash) VALUES (?, ?)", null)) orelse return error.NoStatement;
         defer stmt.finalize() catch {};
-        try stmt.bindText(1, hash_str, .transient);
-        try stmt.bindInt64(2, bank_id);
+        try stmt.bindText(1, fid, .transient);
+        try stmt.bindText(2, hash_str, .transient);
         while ((try stmt.step()) != .Done) {}
     }
 
-    var stmt = (try ctx.db.prepare_v2("SELECT id FROM ofx_accounts WHERE hash LIKE ? AND bank_id = ?", null)) orelse return error.NoStatement;
+    var stmt = (try db.prepare_v2("SELECT id FROM ofx_accounts WHERE hash LIKE ?", null)) orelse return error.NoStatement;
     try stmt.bindText(1, hash_str, .transient);
-    try stmt.bindInt64(2, bank_id);
     while ((try stmt.step()) != .Done) {
         const id = stmt.columnInt64(0);
         return id;
     }
-    return error.BankNotFound;
+    return error.AccountNotFound;
 }
 
 const Currency = struct {
@@ -517,8 +661,8 @@ const Currency = struct {
     divisor: i64,
 };
 
-fn getCurrencyByName(ctx: *Context, name: []const u8) !Currency {
-    var stmt = (try ctx.db.prepare_v2("SELECT id, divisor FROM currencies WHERE name LIKE ?", null)) orelse return error.NoStatement;
+fn getCurrencyByName(db: *sqlite3.SQLite3, name: []const u8) !Currency {
+    var stmt = (try db.prepare_v2("SELECT id, divisor FROM currencies WHERE name LIKE ?", null)) orelse return error.NoStatement;
     try stmt.bindText(1, name, .transient);
     while ((try stmt.step()) != .Done) {
         return Currency{
