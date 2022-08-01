@@ -142,7 +142,7 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
     );
     var indent: usize = 0;
     for (ofx_events) |event| {
-        if (event == .close_other) indent -|= 1;
+        if (event.isClose()) indent -|= 1;
 
         var i: usize = 0;
         while (i < indent) : (i += 1) {
@@ -150,7 +150,7 @@ fn importOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
         }
         try out.print("{}<br>", .{event.fmtWithSrc(src)});
 
-        if (event == .start_other) indent += 1;
+        if (event.isStart()) indent += 1;
     }
 
     try out.writeAll(

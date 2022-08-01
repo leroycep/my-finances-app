@@ -9,6 +9,45 @@ pub const Event = union(enum) {
     start_other: Loc,
     close_other: Loc,
 
+    bankid: Loc,
+    acctid: Loc,
+    accttype: Loc,
+
+    start_stmttrn,
+    close_stmttrn,
+    trntype: Loc,
+    dtposted: Loc,
+    trnamt: Loc,
+    fitid: Loc,
+    name: Loc,
+    memo: Loc,
+
+    pub fn isStart(this: @This()) bool {
+        return switch (this) {
+            .start_other,
+            .start_stmttrn,
+            => true,
+            else => false,
+        };
+    }
+
+    pub fn isClose(this: @This()) bool {
+        return switch (this) {
+            .close_other,
+            .close_stmttrn,
+            => true,
+            else => false,
+        };
+    }
+
+    pub fn getClose(this: @This()) ?@This() {
+        return switch (this) {
+            .start_stmttrn => return .close_stmttrn,
+            .start_other => |loc| return @This(){ .close_other = loc },
+            else => return null,
+        };
+    }
+
     pub fn fmtWithSrc(this: @This(), src: []const u8) FmtWithSrc {
         return FmtWithSrc{ .src = src, .event = this };
     }
@@ -26,7 +65,22 @@ pub const Event = union(enum) {
             _ = fmt;
             _ = options;
             switch (this.event) {
-                .text, .start_other, .close_other, .flat_element => |loc| try writer.print("{s} \"{}\"", .{
+                .start_stmttrn, .close_stmttrn => try writer.print("{s}", .{std.meta.tagName(this.event)}),
+
+                .bankid,
+                .acctid,
+                .accttype,
+                .trntype,
+                .dtposted,
+                .trnamt,
+                .fitid,
+                .name,
+                .memo,
+                .text,
+                .start_other,
+                .close_other,
+                .flat_element,
+                => |loc| try writer.print("{s} \"{}\"", .{
                     std.meta.tagName(this.event),
                     std.zig.fmtEscapes(loc.text(this.src)),
                 }),
@@ -83,13 +137,16 @@ fn parseContainerElement(src: []const u8, cursor: *Cursor, events: *std.ArrayLis
     }
 
     const element_start_event = try parseElementStart(src, cursor, events);
-    const element_name = events.items[element_start_event].start_other.text(src);
 
-    for (CONTAINER_ELEMENTS) |container_name| {
-        if (std.mem.eql(u8, element_name, container_name)) {
-            break;
-        }
-    } else return error.NotAContainerElement;
+    if (events.items[element_start_event] == .start_other) {
+        const element_name = events.items[element_start_event].start_other.text(src);
+
+        for (CONTAINER_ELEMENTS) |container_name| {
+            if (std.mem.eql(u8, element_name, container_name)) {
+                break;
+            }
+        } else return error.NotAContainerElement;
+    }
 
     while (cursor.peek()) |token| {
         switch (token.tag) {
@@ -108,15 +165,22 @@ fn parseContainerElement(src: []const u8, cursor: *Cursor, events: *std.ArrayLis
                 }
 
                 if (parseElementEnd(src, cursor, events)) |element_end_event| {
-                    const start_element_name = events.items[element_start_event].start_other.text(src);
-                    const close_element_name = events.items[element_end_event].close_other.text(src);
-                    if (!std.mem.eql(u8, start_element_name, close_element_name)) {
-                        std.debug.print("{s}:{} element name doesn't match ({s} != {s})\n", .{ @src().file, @src().line, start_element_name, close_element_name });
-                        try events.append(.{ .close_other = events.items[element_end_event].close_other });
-                        events.items[element_end_event].close_other = events.items[element_start_event].start_other;
+                    const start_element = events.items[element_start_event];
+                    const close_element = events.items[element_end_event];
+                    const is_match = switch (start_element) {
+                        .start_stmttrn => close_element == .close_stmttrn,
+                        .start_other => |loc| close_element == .close_other and std.mem.eql(u8, loc.text(src), close_element.close_other.text(src)),
+                        else => false,
+                    };
+                    if (!is_match) {
+                        std.debug.print("{s}:{} element doesn't match ({} != {})\n", .{ @src().file, @src().line, start_element, close_element });
+                        try events.append(events.items[element_end_event]);
+                        events.items[element_end_event] = start_element.getClose().?;
                     }
                     break;
                 } else |_| if (parseContainerElement(src, cursor, events)) {
+                    //
+                } else |_| if (parsePropertyElement(src, cursor, events)) |_| {
                     //
                 } else |_| if (parseFlatElement(src, cursor, events)) {
                     //
@@ -127,6 +191,70 @@ fn parseContainerElement(src: []const u8, cursor: *Cursor, events: *std.ArrayLis
             .angle_close => return error.InvalidSyntax,
         }
     }
+}
+
+fn parsePropertyElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Event)) anyerror!u32 {
+    const start = cursor.*;
+    const events_start_len = events.items.len;
+    errdefer {
+        cursor.* = start;
+        events.shrinkRetainingCapacity(events_start_len);
+    }
+    _ = src;
+
+    _ = try cursor.eat(.angle_start);
+    const element_name_token_idx = try cursor.eat(.text);
+    _ = try cursor.eat(.angle_close);
+    const value_loc = try mergeText(src, cursor, events);
+
+    const element_name = cursor.tokens[element_name_token_idx].loc.text(src);
+    const event_index = events.items.len;
+    if (std.mem.eql(u8, element_name, "TRNTYPE")) {
+        try events.append(.{ .trntype = value_loc });
+    } else if (std.mem.eql(u8, element_name, "DTPOSTED")) {
+        try events.append(.{ .dtposted = value_loc });
+    } else if (std.mem.eql(u8, element_name, "TRNAMT")) {
+        try events.append(.{ .trnamt = value_loc });
+    } else if (std.mem.eql(u8, element_name, "FITID")) {
+        try events.append(.{ .fitid = value_loc });
+    } else if (std.mem.eql(u8, element_name, "NAME")) {
+        try events.append(.{ .name = value_loc });
+    } else if (std.mem.eql(u8, element_name, "MEMO")) {
+        try events.append(.{ .memo = value_loc });
+    } else if (std.mem.eql(u8, element_name, "BANKID")) {
+        try events.append(.{ .bankid = value_loc });
+    } else if (std.mem.eql(u8, element_name, "ACCTID")) {
+        try events.append(.{ .acctid = value_loc });
+    } else if (std.mem.eql(u8, element_name, "ACCTTYPE")) {
+        try events.append(.{ .accttype = value_loc });
+    } else {
+        return error.UnrecognizedPropertyName;
+    }
+    return @intCast(u32, event_index);
+}
+
+fn mergeText(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Event)) anyerror!Loc {
+    const start = cursor.*;
+    const events_start_len = events.items.len;
+    errdefer {
+        cursor.* = start;
+        events.shrinkRetainingCapacity(events_start_len);
+    }
+    _ = src;
+
+    const first_tok_idx = cursor.eat(.text) catch cursor.eat(.forward_slash) catch |e| return e;
+    var loc = cursor.tokens[first_tok_idx].loc;
+    while (cursor.peek()) |tok| {
+        switch (tok.tag) {
+            .text, .forward_slash => {
+                _ = cursor.next();
+                loc.end = tok.loc.end;
+            },
+            else => break,
+        }
+    }
+
+    return loc;
 }
 
 fn parseFlatElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Event)) anyerror!void {
@@ -172,7 +300,14 @@ fn parseElementStart(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Ev
     _ = try cursor.eat(.angle_close);
 
     const event_index = events.items.len;
-    try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
+    const element_name = cursor.tokens[element_name_token_idx].text(src);
+    if (std.mem.eql(u8, element_name, "STMTTRN")) {
+        try events.append(.start_stmttrn);
+        //} else if (std.mem.eql(u8, element_name, "STMTTRN")) {
+        //    try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
+    } else {
+        try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
+    }
 
     return @intCast(u32, event_index);
 }
@@ -191,17 +326,23 @@ fn parseElementEnd(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Even
     const element_name_token_idx = try cursor.eat(.text);
     _ = try cursor.eat(.angle_close);
 
-    const element_name = cursor.tokens[element_name_token_idx].text(src);
-    for (CONTAINER_ELEMENTS) |container_name| {
-        if (std.mem.eql(u8, element_name, container_name)) {
-            break;
-        }
-    } else {
-        std.debug.print("Element name {s} not in list of containers!\n", .{element_name});
-    }
-
     const event_index = events.items.len;
-    try events.append(.{ .close_other = cursor.tokens[element_name_token_idx].loc });
+    const element_name = cursor.tokens[element_name_token_idx].text(src);
+    if (std.mem.eql(u8, element_name, "STMTTRN")) {
+        try events.append(.close_stmttrn);
+        //} else if (std.mem.eql(u8, element_name, "STMTTRN")) {
+        //    try events.append(.{ .start_other = cursor.tokens[element_name_token_idx].loc });
+    } else {
+        try events.append(.{ .close_other = cursor.tokens[element_name_token_idx].loc });
+
+        for (CONTAINER_ELEMENTS) |container_name| {
+            if (std.mem.eql(u8, element_name, container_name)) {
+                break;
+            }
+        } else {
+            std.debug.print("Element name {s} not in list of containers!\n", .{element_name});
+        }
+    }
 
     return @intCast(u32, event_index);
 }
