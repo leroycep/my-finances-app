@@ -249,7 +249,6 @@ fn parsePropertyElement(src: []const u8, cursor: *Cursor, events: *std.ArrayList
         cursor.* = start;
         events.shrinkRetainingCapacity(events_start_len);
     }
-    _ = src;
 
     _ = try cursor.eat(.angle_start);
     const element_name_token_idx = try cursor.eat(.text);
@@ -352,7 +351,6 @@ fn parseElementStart(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Ev
         cursor.* = start;
         events.shrinkRetainingCapacity(events_start_len);
     }
-    _ = src;
 
     _ = try cursor.eat(.angle_start);
     const element_name_token_idx = try cursor.eat(.text);
@@ -382,7 +380,6 @@ fn parseElementEnd(src: []const u8, cursor: *Cursor, events: *std.ArrayList(Even
         cursor.* = start;
         events.shrinkRetainingCapacity(events_start_len);
     }
-    _ = src;
 
     _ = try cursor.eat(.angle_start);
     _ = try cursor.eat(.forward_slash);

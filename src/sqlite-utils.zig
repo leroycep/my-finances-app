@@ -8,7 +8,7 @@ const sqlite3 = @import("sqlite3");
 ///
 /// TODO: Check columns of tables
 pub fn ensureSchema(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristineSchema: [:0]const u8) !void {
-    var txn = try Transaction.begin(@src(), db);
+    var txn = try Transaction.begin(std.fmt.comptimePrint("{s}::{s}", .{ @src().file, @src().fn_name }), db);
     defer txn.deinit();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -94,17 +94,17 @@ fn dbTables(allocator: std.mem.Allocator, db: *sqlite3.SQLite3) !std.StringHashM
     var hashmap = std.StringHashMap(TableInfo).init(allocator);
     errdefer hashmap.deinit();
     while ((try stmt.step()) != .Done) {
-        if (std.mem.startsWith(u8, stmt.columnText(1), "sqlite_")) {
+        if (std.mem.startsWith(u8, stmt.columnText(1) orelse continue, "sqlite_")) {
             continue;
         }
 
-        const schema = try allocator.dupeZ(u8, stmt.columnText(0));
-        const name = try allocator.dupeZ(u8, stmt.columnText(1));
-        const table_type = std.meta.stringToEnum(TableInfo.Type, stmt.columnText(2)).?;
+        const schema = try allocator.dupeZ(u8, stmt.columnText(0).?);
+        const name = try allocator.dupeZ(u8, stmt.columnText(1).?);
+        const table_type = std.meta.stringToEnum(TableInfo.Type, stmt.columnText(2).?).?;
         const ncol = @intCast(u32, stmt.columnInt(3));
         const without_rowid = stmt.columnInt(4) != 0;
         const strict = stmt.columnInt(5) != 0;
-        const sql = try allocator.dupeZ(u8, stmt.columnText(6));
+        const sql = try allocator.dupeZ(u8, stmt.columnText(6).?);
 
         const fullname = try std.fmt.allocPrint(allocator, "\"{}\".\"{}\"", .{ std.zig.fmtEscapes(schema), std.zig.fmtEscapes(name) });
         try hashmap.putNoClobber(fullname, .{
@@ -138,7 +138,7 @@ fn dbRebuildTable(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristine: 
         defer stmt.finalize() catch unreachable;
         try stmt.bindText(1, new_table_info.name, .transient);
         while ((try stmt.step()) != .Done) {
-            try common_cols_list.putNoClobber(try allocator.dupeZ(u8, stmt.columnText(0)), false);
+            try common_cols_list.putNoClobber(try allocator.dupeZ(u8, stmt.columnText(0).?), false);
         }
     }
 
@@ -149,7 +149,7 @@ fn dbRebuildTable(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristine: 
         defer stmt.finalize() catch unreachable;
         try stmt.bindText(1, new_table_info.name, .transient);
         while ((try stmt.step()) != .Done) {
-            if (common_cols_list.getPtr(stmt.columnText(0))) |in_both| {
+            if (common_cols_list.getPtr(stmt.columnText(0).?)) |in_both| {
                 in_both.* = true;
             }
         }
@@ -178,7 +178,7 @@ fn dbRebuildTable(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristine: 
     try db.exec("PRAGMA foreign_keys=OFF;", null, null, null);
     defer db.exec("PRAGMA foreign_keys=ON;", null, null, null) catch {};
 
-    var txn = try Transaction.begin(@src(), db);
+    var txn = try Transaction.begin(std.fmt.comptimePrint("{s}::{s}", .{ @src().file, @src().fn_name }), db);
     defer txn.deinit();
     const table_migration_name = try std.fmt.allocPrint(allocator,
         \\"{}_migration_new"
@@ -214,13 +214,8 @@ fn dbRebuildTable(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristine: 
     try txn.commit();
 }
 
-pub fn executeScript(db: *sqlite3.SQLite3, sql: []const u8) !void {
-    var next_sql = sql;
-    var tail_sql = sql;
-    while (try db.prepare_v2(next_sql, &tail_sql)) |stmt| : (next_sql = tail_sql) {
-        defer stmt.finalize() catch |e| std.debug.panic("could not finalize: {}", .{e});
-        while ((try stmt.step()) != .Done) {}
-    }
+pub fn executeScript(db: *sqlite3.SQLite3, sql: [:0]const u8) !void {
+    try db.exec(sql, null, null, null);
 }
 
 pub const Transaction = struct {
@@ -228,8 +223,7 @@ pub const Transaction = struct {
     commit_sql: ?[:0]const u8,
     rollback_sql: ?[:0]const u8,
 
-    pub fn begin(comptime src: std.builtin.SourceLocation, db: *sqlite3.SQLite3) !@This() {
-        const SAVEPOINT = comptime std.fmt.comptimePrint("{s}:{}", .{ src.file, src.line });
+    pub fn begin(comptime SAVEPOINT: []const u8, db: *sqlite3.SQLite3) !@This() {
         try db.exec(comptime std.fmt.comptimePrint("SAVEPOINT \"{}\"", .{std.zig.fmtEscapes(SAVEPOINT)}), null, null, null);
         return @This(){
             .db = db,

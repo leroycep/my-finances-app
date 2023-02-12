@@ -1,0 +1,18 @@
+.{
+	.name = "my-finances-app",
+	.version = "0.1.0",
+	.dependencies = .{
+        .zap = .{
+            .url = "https://github.com/renerocksai/zap/archive/db6496cd7afc6bac50da563936021ee28f591dc1.tar.gz",
+            .hash = "12203791cdbf4ebc2692bbd2ce790fedbc2e7295eec3efd7812621aa35a5ce83767a",
+        },
+        .@"facil.io" = .{
+            .url = "https://github.com/renerocksai/facil.io/archive/2c04cd1949328dd62fe5d262b9cc930e54392ab8.tar.gz",
+            .hash = "12209d3b552145f24431e5a2e6a4ad59ceaa9656f7fba8af7a8aa704a8784a79f55d",
+        },
+		.sqlite3 = .{
+			.url = "https://github.com/leroycep/sqlite-zig/archive/1d4cd78c5b2ebd311265baba608f301fcd6fac05.tar.gz",
+			.hash = "12205c00ef21065c495c2668e7f02214226847041bd758af7aa93bd4872fac39cf89",
+		},
+	},
+}

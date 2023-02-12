@@ -1,5 +1,5 @@
 const std = @import("std");
-const http = @import("apple_pie");
+const zap = @import("zap");
 pub const io_mode = .evented;
 const sqlite3 = @import("sqlite3");
 const sqlite_utils = @import("./sqlite-utils.zig");
@@ -15,7 +15,20 @@ const DEFAULT_PORT = 56428;
 const Context = struct {
     allocator: std.mem.Allocator,
     db: *sqlite3.SQLite3,
+    get_routes: std.StringHashMapUnmanaged(zap.SimpleHttpRequestFn) = .{},
+    post_routes: std.StringHashMapUnmanaged(zap.SimpleHttpRequestFn) = .{},
+    put_routes: std.StringHashMapUnmanaged(zap.SimpleHttpRequestFn) = .{},
+    static_files: std.StringHashMapUnmanaged(Blob),
+
+    fn deinit(this: *@This()) void {
+        this.get_routes.deinit(this.allocator);
+        this.post_routes.deinit(this.allocator);
+        this.put_routes.deinit(this.allocator);
+        this.static_files.deinit(this.allocator);
+    }
 };
+
+var ctx: Context = undefined;
 
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,58 +51,100 @@ pub fn main() anyerror!void {
     defer db.close() catch @panic("Couldn't close sqlite database");
     try setupSchema(gpa.allocator(), db);
 
-    var ctx = Context{
+    ctx = Context{
         .allocator = gpa.allocator(),
         .db = db,
+        .static_files = .{},
     };
+    defer ctx.deinit();
 
-    const builder = http.router.Builder(*Context);
+    try ctx.get_routes.put(ctx.allocator, "/currencies", wrapZigErrors(getCurrencies));
+    try ctx.get_routes.put(ctx.allocator, "/ofx/transactions", wrapZigErrors(getOFXTransactions));
+    try ctx.get_routes.put(ctx.allocator, "/ofx/ledger_balances", wrapZigErrors(getOFXLedgerBalances));
+    try ctx.get_routes.put(ctx.allocator, "/ofx/accounts", wrapZigErrors(getOFXAccounts));
 
-    @setEvalBranchQuota(10000);
-    std.log.info("Serving on http://{s}:{}", .{ "127.0.0.1", DEFAULT_PORT });
-    try http.listenAndServe(
-        gpa.allocator(),
-        try std.net.Address.parseIp("127.0.0.1", DEFAULT_PORT),
-        &ctx,
-        comptime http.router.Router(*Context, &.{
-            builder.get("/", index),
-            builder.get("/currencies", getCurrencies),
-            builder.get("/ofx/transactions", getOFXTransactions),
-            builder.get("/ofx/ledger_balances", getOFXLedgerBalances),
-            builder.get("/ofx/accounts", getOFXAccounts),
-            builder.get("/ofx/accounts/:account_id", getOFXAccount),
-            builder.put("/ofx/accounts/:account_id", putOFXAccount),
-            builder.post("/ofx", postOFX),
-            builder.post("/ofx/debug", debugParseOFX),
-            //builder.get("/accounts", getAccounts),
-            //builder.post("/accounts", postAccount),
-            //builder.get("/rules/payee", getPayeeRules),
-            //builder.post("/rules/payee", postPayeeRule),
-            //builder.get("/assertions/balance", getBalanceAssertions),
-            //builder.get("/transactions", getTransactions),
-            builder.get("/static/:filename", staticFiles(.{
-                .@"style.css" = .{ .css = @embedFile("style.css") },
-                .@"tachyons.min.css" = .{ .css = @embedFile("tachyons.min.css") },
-                .@"htmx.min.js" = .{ .js = @embedFile("htmx.min.js") },
-                .@"_hyperscript.min.js" = .{ .js = @embedFile("_hyperscript.min.js") },
-            })),
-        }),
-    );
+    // try ctx.put_routes.put(ctx.allocator, "/ofx/accounts/:account_id", wrapZigErrors(putOFXAccount)wrapZigErrors();)
+
+    // try ctx.post_routes.put(ctx.allocator, "/ofx", wrapZigErrors(postOFX));
+    // try ctx.post_routes.put(ctx.allocator, "/ofx/debug", wrapZigErrors(debugParseOFX));
+
+    try ctx.static_files.putNoClobber(ctx.allocator, "/static/style.css", .{ .css = @embedFile("style.css") });
+    try ctx.static_files.putNoClobber(ctx.allocator, "/static/tachyons.min.css", .{ .css = @embedFile("tachyons.min.css") });
+    try ctx.static_files.putNoClobber(ctx.allocator, "/static/htmx.min.js", .{ .js = @embedFile("htmx.min.js") });
+    try ctx.static_files.putNoClobber(ctx.allocator, "/static/_hyperscript.min.js", .{ .js = @embedFile("_hyperscript.min.js") });
+
+    var listener = zap.SimpleHttpListener.init(.{
+        .port = DEFAULT_PORT,
+        .on_request = on_request,
+        .log = true,
+    });
+    try listener.listen();
+
+    std.log.info("Listening on http://{s}:{}", .{ "127.0.0.1", DEFAULT_PORT });
+
+    zap.start(.{
+        .threads = 1,
+        .workers = 1,
+    });
 }
 
-fn index(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    _ = ctx;
-    _ = req;
-    try res.headers.put("Content-Type", "text/html");
-    try res.writer().writeAll(@embedFile("./index.html"));
+fn wrapZigErrors(comptime F: anytype) zap.SimpleHttpRequestFn {
+    const Wrapper = struct {
+        fn handle(r: zap.SimpleRequest) void {
+            F(r) catch |err| {
+                std.log.err("Error handling request: {}", .{err});
+            };
+        }
+    };
+    return Wrapper.handle;
 }
 
-fn getCurrencies(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    _ = req;
+fn on_request(r: zap.SimpleRequest) void {
+    if (r.path) |path| {
+        const method = while (r.method) |method| {
+            break std.meta.stringToEnum(std.http.Method, method) orelse {
+                std.log.warn("Unknown HTTP method: {s}", .{method});
+                _ = r.sendBody("<html>Unknown method</html>");
+                return;
+            };
+        } else std.http.Method.GET;
 
-    var out = res.writer();
+        switch (method) {
+            .GET => {
+                if (ctx.static_files.get(path)) |blob| {
+                    _ = r.setHeader("Content-Type", blob.contentType());
+                    _ = r.sendBody(blob.data());
+                    return;
+                }
+                if (ctx.get_routes.get(path)) |handler| {
+                    handler(r);
+                    return;
+                }
+                if (std.mem.startsWith(u8, path, "/ofx/accounts/")) {
+                    const account_id_text = path["/ofx/accounts/".len..];
+                    const account_id = std.fmt.parseInt(i64, account_id_text, 10) catch |err| {
+                        std.log.err("Error parsing account id: {}", .{err});
+                        return;
+                    };
+                    getOFXAccount(r, account_id) catch |err| {
+                        std.log.err("Error handling request: {}", .{err});
+                        return;
+                    };
+                    return;
+                }
+            },
+            else => {},
+        }
+    }
 
-    try res.headers.put("Content-Type", "text/html");
+    _ = r.sendBody(@embedFile("./index.html"));
+}
+
+fn getCurrencies(r: zap.SimpleRequest) !void {
+    var html = std.ArrayList(u8).init(ctx.allocator);
+    defer html.deinit();
+    const out = html.writer();
+
     try writeHTMLHeader(out, "Currencies");
 
     try out.writeAll(
@@ -109,7 +164,7 @@ fn getCurrencies(ctx: *Context, res: *http.Response, req: http.Request) !void {
         const divisor = stmt.columnInt64(3);
         // TODO: Escape note text
         try out.print(
-            \\<tr><input type="hidden" name="currencies-id" values="{}"/><td class="align-end">{}</td><td class="align-end">{s}</td><td class="align-end">{}</td></tr>
+            \\<tr><input type="hidden" name="currencies-id" values="{}"/><td class="align-end">{}</td><td class="align-end">{?s}</td><td class="align-end">{}</td></tr>
         , .{ id, date_opened.fmtISO(), name, divisor });
     }
 
@@ -119,14 +174,15 @@ fn getCurrencies(ctx: *Context, res: *http.Response, req: http.Request) !void {
         \\</body>
         \\</html>
     );
+
+    _ = r.sendBody(html.items);
 }
 
-fn getOFXAccounts(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    _ = req;
+fn getOFXAccounts(r: zap.SimpleRequest) !void {
+    var html = std.ArrayList(u8).init(ctx.allocator);
+    defer html.deinit();
+    const out = html.writer();
 
-    var out = res.writer();
-
-    try res.headers.put("Content-Type", "text/html");
     try writeHTMLHeader(out, "Accounts");
 
     try out.writeAll(
@@ -150,11 +206,11 @@ fn getOFXAccounts(ctx: *Context, res: *http.Response, req: http.Request) !void {
         const account_name = @ptrCast(?[*:0]const u8, stmt.sqlite3_column_text(2));
         // TODO: Escape note text
         try out.print(
-            \\<tr><td class="align-start"><a href="/ofx/accounts/{}">{s}</a></td><td class="align-start">
+            \\<tr><td class="align-start"><a href="/ofx/accounts/{}">{?s}</a></td><td class="align-start">
         , .{ account_id, ofx_hash });
         if (account_name) |name| {
             try out.print(
-                \\<a href="/accounts/{}">{s}</a>
+                \\<a href="/accounts/{}">{?s}</a>
             , .{ std.zig.fmtEscapes(std.mem.span(name)), name });
         } else {
             try out.writeAll("null");
@@ -168,16 +224,14 @@ fn getOFXAccounts(ctx: *Context, res: *http.Response, req: http.Request) !void {
         \\</body>
         \\</html>
     );
+    _ = r.sendBody(html.items);
 }
 
-fn getOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures: struct { account_id: []const u8 }) !void {
-    _ = req;
+fn getOFXAccount(r: zap.SimpleRequest, account_id: i64) !void {
+    var html = std.ArrayList(u8).init(ctx.allocator);
+    defer html.deinit();
+    const out = html.writer();
 
-    const account_id = try std.fmt.parseInt(i64, captures.account_id, 10);
-
-    var out = res.writer();
-
-    try res.headers.put("Content-Type", "text/html");
     try writeHTMLHeader(out, "OFX Account");
 
     try out.writeAll(
@@ -193,8 +247,8 @@ fn getOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures
     defer stmt.finalize() catch {};
     try stmt.bindInt64(1, account_id);
     while ((try stmt.step()) != .Done) {
-        const ofx_hash = stmt.columnText(0);
-        const account_name = @ptrCast(?[*:0]const u8, stmt.sqlite3_column_text(1));
+        const ofx_hash = stmt.columnText(0).?;
+        const account_name = stmt.columnText(1);
         try out.print(
             \\<tr><th>Hash</th><td><a href="/ofx/accounts/{}">{s}</a></tr>
         , .{ std.zig.fmtEscapes(ofx_hash), ofx_hash });
@@ -205,7 +259,7 @@ fn getOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures
         if (account_name) |name| {
             try out.print(
                 \\<a href="/accounts/{}">{s}</a>
-            , .{ std.zig.fmtEscapes(std.mem.span(name)), name });
+            , .{ std.zig.fmtEscapes(name), name });
         } else {
             try out.print(
                 \\<form>
@@ -222,47 +276,46 @@ fn getOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures
         \\</body>
         \\</html>
     );
+
+    _ = r.sendBody(html.items);
 }
 
-fn putOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures: struct { account_id: []const u8 }) !void {
-    _ = req;
+// fn putOFXAccount(ctx: *Context, res: *http.Response, req: http.Request, captures: struct { account_id: []const u8 }) !void {
+//     const account_id = try std.fmt.parseInt(i64, captures.account_id, 10);
+//     const account_name_opt = try req.formValue(ctx.allocator, "ofx-account-name");
+//     defer if (account_name_opt) |account_name| ctx.allocator.free(account_name);
 
-    const account_id = try std.fmt.parseInt(i64, captures.account_id, 10);
-    const account_name_opt = try req.formValue(ctx.allocator, "ofx-account-name");
-    defer if (account_name_opt) |account_name| ctx.allocator.free(account_name);
+//     var out = res.writer();
 
-    var out = res.writer();
+//     try res.headers.put("Content-Type", "text/html");
+//     try writeHTMLHeader(out, "OFX Account");
 
-    try res.headers.put("Content-Type", "text/html");
-    try writeHTMLHeader(out, "OFX Account");
+//     if (account_name_opt) |account_name| {
+//         var stmt = (try ctx.db.prepare_v2(
+//             \\INSERT INTO ofx_account_names(account_id, name) VALUES (?, ?)
+//             \\ON CONFLICT(account_id) DO UPDATE SET name=excluded.name;
+//         , null)) orelse return error.NoStatement;
+//         defer stmt.finalize() catch {};
+//         try stmt.bindInt64(1, account_id);
+//         try stmt.bindText(2, account_name, .transient);
+//         while ((try stmt.step()) != .Done) {}
 
-    if (account_name_opt) |account_name| {
-        var stmt = (try ctx.db.prepare_v2(
-            \\INSERT INTO ofx_account_names(account_id, name) VALUES (?, ?)
-            \\ON CONFLICT(account_id) DO UPDATE SET name=excluded.name;
-        , null)) orelse return error.NoStatement;
-        defer stmt.finalize() catch {};
-        try stmt.bindInt64(1, account_id);
-        try stmt.bindText(2, account_name, .transient);
-        while ((try stmt.step()) != .Done) {}
+//         try out.print(
+//             \\<div>Account {}'s name set to {s}</div>
+//         , .{ account_id, account_name });
+//     }
 
-        try out.print(
-            \\<div>Account {}'s name set to {s}</div>
-        , .{ account_id, account_name });
-    }
+//     try out.writeAll(
+//         \\</body>
+//         \\</html>
+//     );
+// }
 
-    try out.writeAll(
-        \\</body>
-        \\</html>
-    );
-}
+fn getOFXLedgerBalances(r: zap.SimpleRequest) !void {
+    var html = std.ArrayList(u8).init(ctx.allocator);
+    defer html.deinit();
+    const out = html.writer();
 
-fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    _ = req;
-
-    var out = res.writer();
-
-    try res.headers.put("Content-Type", "text/html");
     try writeHTMLHeader(out, "OFX Ledger Balances");
 
     try out.writeAll(
@@ -314,11 +367,11 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
             try out.print(
                 \\<tr>
                 \\  <td class="align-end">{}</td>
-                \\  <td class="align-start">{s}</td>
+                \\  <td class="align-start">{?s}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
                 \\  <td class="align-end">{}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
-                \\  <td class="align-start">{s}</td>
+                \\  <td class="align-start">{?s}</td>
                 \\  <td class="align-end"></td>
                 \\</tr>
             , .{
@@ -335,11 +388,11 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
             try out.print(
                 \\<tr class="error">
                 \\  <td class="align-end">{}</td>
-                \\  <td class="align-start">{s}</td>
+                \\  <td class="align-start">{?s}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
                 \\  <td class="align-end">{}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
-                \\  <td class="align-start">{s}</td>
+                \\  <td class="align-start">{?s}</td>
                 \\  <td class="align-end">{}.{:0>2}</td>
                 \\</tr>
             , .{
@@ -363,14 +416,15 @@ fn getOFXLedgerBalances(ctx: *Context, res: *http.Response, req: http.Request) !
         \\</body>
         \\</html>
     );
+
+    _ = r.sendBody(html.items);
 }
 
-fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    _ = req;
+fn getOFXTransactions(r: zap.SimpleRequest) !void {
+    var html = std.ArrayList(u8).init(ctx.allocator);
+    defer html.deinit();
+    const out = html.writer();
 
-    var out = res.writer();
-
-    try res.headers.put("Content-Type", "text/html");
     try writeHTMLHeader(out, "OFX Transactions");
 
     try out.writeAll(
@@ -411,10 +465,10 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
         try out.print(
             \\<tr><input type="hidden" name="ofx-account-id" values="{}"/><input type="hidden" name="ofx-transactions-id" values="{}"/>
             \\  <td class="align-end">{}</td>
-            \\  <td class="align-start">{s}</td>
+            \\  <td class="align-start">{?s}</td>
             \\  <td class="align-end">{}.{:0>2}</td>
-            \\  <td class="align-start">{s}</td>
-            \\  <td class="align-start">{s}</td>
+            \\  <td class="align-start">{?s}</td>
+            \\  <td class="align-start">{?s}</td>
             \\</tr>
         , .{
             account_id,
@@ -434,260 +488,262 @@ fn getOFXTransactions(ctx: *Context, res: *http.Response, req: http.Request) !vo
         \\</body>
         \\</html>
     );
+
+    _ = r.sendBody(html.items);
 }
 
-fn postOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    var arena = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer arena.deinit();
+// fn postOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
+//     var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+//     defer arena.deinit();
 
-    var files_imported: usize = 0;
+//     var files_imported: usize = 0;
 
-    const headers = try req.headers(arena.allocator());
-    var multipart_iter = try multipart_form_data.parse(headers.get("Content-Type"), req.body());
+//     const headers = try req.headers(arena.allocator());
+//     var multipart_iter = try multipart_form_data.parse(headers.get("Content-Type"), req.body());
 
-    var txn = try Transaction.begin(@src(), ctx.db);
-    defer txn.deinit();
+//     var txn = try Transaction.begin(@src(), ctx.db);
+//     defer txn.deinit();
 
-    while (try multipart_iter.next()) |part| {
-        const form_name = part.formName() orelse continue;
-        if (std.mem.eql(u8, "file", std.mem.trim(u8, form_name, "\""))) {
-            try importOFXFile(ctx.db, arena.allocator(), part.body);
-            files_imported += 1;
-        }
-    }
+//     while (try multipart_iter.next()) |part| {
+//         const form_name = part.formName() orelse continue;
+//         if (std.mem.eql(u8, "file", std.mem.trim(u8, form_name, "\""))) {
+//             try importOFXFile(ctx.db, arena.allocator(), part.body);
+//             files_imported += 1;
+//         }
+//     }
 
-    try txn.commit();
+//     try txn.commit();
 
-    try res.headers.put("Content-Type", "text/html");
-    var out = res.writer();
+//     try res.headers.put("Content-Type", "text/html");
+//     var out = res.writer();
 
-    try writeHTMLHeader(out, "Import OFX");
+//     try writeHTMLHeader(out, "Import OFX");
 
-    try out.print(
-        \\Successfully imported {} files
-        \\</body>
-        \\</html>
-    , .{files_imported});
-}
+//     try out.print(
+//         \\Successfully imported {} files
+//         \\</body>
+//         \\</html>
+//     , .{files_imported});
+// }
 
-fn importOFXFile(db: *sqlite3.SQLite3, allocator: std.mem.Allocator, src: []const u8) !void {
-    var txn = try Transaction.begin(@src(), db);
-    defer txn.deinit();
+// fn importOFXFile(db: *sqlite3.SQLite3, allocator: std.mem.Allocator, src: []const u8) !void {
+//     var txn = try Transaction.begin(@src(), db);
+//     defer txn.deinit();
 
-    const ofx_events = try ofx_sgml.parse(allocator, src);
-    defer allocator.free(ofx_events);
+//     const ofx_events = try ofx_sgml.parse(allocator, src);
+//     defer allocator.free(ofx_events);
 
-    var stmt_insert_transaction = (try db.prepare_v2(
-        \\INSERT OR IGNORE INTO ofx_transactions(account_id, id, day_posted, amount, currency_id, description)
-        \\VALUES (?, ?, ?, ?, ?, ? || COALESCE(?, ''))
-    , null)) orelse return error.NoStatement;
-    defer stmt_insert_transaction.finalize() catch {};
+//     var stmt_insert_transaction = (try db.prepare_v2(
+//         \\INSERT OR IGNORE INTO ofx_transactions(account_id, id, day_posted, amount, currency_id, description)
+//         \\VALUES (?, ?, ?, ?, ?, ? || COALESCE(?, ''))
+//     , null)) orelse return error.NoStatement;
+//     defer stmt_insert_transaction.finalize() catch {};
 
-    var fid: ?[]const u8 = null;
-    var org: ?[]const u8 = null;
-    var account_id: ?i64 = null;
-    var currency: ?Currency = null;
-    var transaction: struct {
-        id: ?[]const u8 = null,
-        day_posted: ?i64 = null,
-        amount: ?i64 = null,
-        name: ?[]const u8 = null,
-        memo: ?[]const u8 = null,
-    } = undefined;
-    var balance: struct {
-        day_posted: ?i64 = null,
-        amount: ?i64 = null,
-    } = undefined;
-    for (ofx_events) |event| {
-        switch (event) {
-            .fid => |loc| fid = loc.text(src),
-            .org => |loc| org = loc.text(src),
-            .close_fi => try putFiOrg(db, fid orelse return error.NoFID, org orelse return error.NoOrg),
+//     var fid: ?[]const u8 = null;
+//     var org: ?[]const u8 = null;
+//     var account_id: ?i64 = null;
+//     var currency: ?Currency = null;
+//     var transaction: struct {
+//         id: ?[]const u8 = null,
+//         day_posted: ?i64 = null,
+//         amount: ?i64 = null,
+//         name: ?[]const u8 = null,
+//         memo: ?[]const u8 = null,
+//     } = undefined;
+//     var balance: struct {
+//         day_posted: ?i64 = null,
+//         amount: ?i64 = null,
+//     } = undefined;
+//     for (ofx_events) |event| {
+//         switch (event) {
+//             .fid => |loc| fid = loc.text(src),
+//             .org => |loc| org = loc.text(src),
+//             .close_fi => try putFiOrg(db, fid orelse return error.NoFID, org orelse return error.NoOrg),
 
-            .acctid => |loc| account_id = try getOrPutAccountByHash(db, fid orelse return error.NoBankId, loc.text(src)),
-            .curdef => |loc| currency = try getCurrencyByName(db, loc.text(src)),
+//             .acctid => |loc| account_id = try getOrPutAccountByHash(db, fid orelse return error.NoBankId, loc.text(src)),
+//             .curdef => |loc| currency = try getCurrencyByName(db, loc.text(src)),
 
-            .start_stmttrn => transaction = .{},
-            .fitid => |loc| transaction.id = loc.text(src),
-            .name => |loc| transaction.name = loc.text(src),
-            .memo => |loc| transaction.memo = loc.text(src),
-            .dtposted => |loc| {
-                const text = loc.text(src);
-                if (text.len < 8) continue;
-                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
-                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
-                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
-                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
-                });
-                transaction.day_posted = @intCast(i64, julian_day_number);
-            },
-            .trnamt => |loc| {
-                const text = loc.text(src);
-                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
-                const major_str = text[0..major_str_end];
-                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
-                transaction.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
-            },
-            .close_stmttrn => {
-                try stmt_insert_transaction.reset();
-                try stmt_insert_transaction.bindInt64(1, account_id orelse return error.NoAccountId);
-                try stmt_insert_transaction.bindText(2, transaction.id orelse return error.NoTransactionId, .transient);
-                try stmt_insert_transaction.bindInt64(3, transaction.day_posted orelse return error.NoDayPosted);
-                try stmt_insert_transaction.bindInt64(4, transaction.amount orelse return error.NoAmount);
-                try stmt_insert_transaction.bindInt64(5, if (currency) |c| c.id else return error.NoCurrency);
-                try stmt_insert_transaction.bindText(6, transaction.name, .transient);
-                if (transaction.memo) |memo| {
-                    try stmt_insert_transaction.bindText(7, memo, .transient);
-                } else {
-                    try stmt_insert_transaction.bindNull(7);
-                }
-                while ((try stmt_insert_transaction.step()) != .Done) {}
-                transaction = undefined;
-            },
+//             .start_stmttrn => transaction = .{},
+//             .fitid => |loc| transaction.id = loc.text(src),
+//             .name => |loc| transaction.name = loc.text(src),
+//             .memo => |loc| transaction.memo = loc.text(src),
+//             .dtposted => |loc| {
+//                 const text = loc.text(src);
+//                 if (text.len < 8) continue;
+//                 const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
+//                     .year = try std.fmt.parseInt(i16, text[0..4], 10),
+//                     .month = try std.fmt.parseInt(u4, text[4..6], 10),
+//                     .day = try std.fmt.parseInt(u5, text[6..8], 10),
+//                 });
+//                 transaction.day_posted = @intCast(i64, julian_day_number);
+//             },
+//             .trnamt => |loc| {
+//                 const text = loc.text(src);
+//                 const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
+//                 const major_str = text[0..major_str_end];
+//                 const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
+//                 transaction.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
+//             },
+//             .close_stmttrn => {
+//                 try stmt_insert_transaction.reset();
+//                 try stmt_insert_transaction.bindInt64(1, account_id orelse return error.NoAccountId);
+//                 try stmt_insert_transaction.bindText(2, transaction.id orelse return error.NoTransactionId, .transient);
+//                 try stmt_insert_transaction.bindInt64(3, transaction.day_posted orelse return error.NoDayPosted);
+//                 try stmt_insert_transaction.bindInt64(4, transaction.amount orelse return error.NoAmount);
+//                 try stmt_insert_transaction.bindInt64(5, if (currency) |c| c.id else return error.NoCurrency);
+//                 try stmt_insert_transaction.bindText(6, transaction.name, .transient);
+//                 if (transaction.memo) |memo| {
+//                     try stmt_insert_transaction.bindText(7, memo, .transient);
+//                 } else {
+//                     try stmt_insert_transaction.bindNull(7);
+//                 }
+//                 while ((try stmt_insert_transaction.step()) != .Done) {}
+//                 transaction = undefined;
+//             },
 
-            .start_balance => balance = .{},
-            .balamt => |loc| {
-                const text = loc.text(src);
-                const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
-                const major_str = text[0..major_str_end];
-                const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
-                balance.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
-            },
-            .dtasof => |loc| {
-                const text = loc.text(src);
-                if (text.len < 8) continue;
-                const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
-                    .year = try std.fmt.parseInt(i16, text[0..4], 10),
-                    .month = try std.fmt.parseInt(u4, text[4..6], 10),
-                    .day = try std.fmt.parseInt(u5, text[6..8], 10),
-                });
-                balance.day_posted = @intCast(i64, julian_day_number);
-            },
-            .close_balance => |kind| {
-                if (kind == .ledger) {
-                    var stmt = (try db.prepare_v2(
-                        \\INSERT OR IGNORE INTO ofx_ledger_balance(account_id, day_posted, amount, currency_id)
-                        \\VALUES (?, ?, ?, ?)
-                    , null)) orelse return error.NoStatement;
-                    defer stmt.finalize() catch {};
-                    try stmt.bindInt64(1, account_id orelse return error.NoAccountId);
-                    try stmt.bindInt64(2, balance.day_posted orelse return error.NoDayPosted);
-                    try stmt.bindInt64(3, balance.amount orelse return error.NoAmount);
-                    try stmt.bindInt64(4, if (currency) |c| c.id else return error.NoCurrency);
-                    while ((try stmt.step()) != .Done) {}
-                }
-                balance = undefined;
-            },
+//             .start_balance => balance = .{},
+//             .balamt => |loc| {
+//                 const text = loc.text(src);
+//                 const major_str_end = std.mem.indexOf(u8, text, ".") orelse text.len;
+//                 const major_str = text[0..major_str_end];
+//                 const minor_str = std.mem.trimLeft(u8, text[major_str_end..], ".");
+//                 balance.amount = (try std.fmt.parseInt(i64, major_str, 10)) * currency.?.divisor + (try std.fmt.parseInt(i64, minor_str, 10));
+//             },
+//             .dtasof => |loc| {
+//                 const text = loc.text(src);
+//                 if (text.len < 8) continue;
+//                 const julian_day_number = date_util.gregorianDateToJulianDayNumber(.{
+//                     .year = try std.fmt.parseInt(i16, text[0..4], 10),
+//                     .month = try std.fmt.parseInt(u4, text[4..6], 10),
+//                     .day = try std.fmt.parseInt(u5, text[6..8], 10),
+//                 });
+//                 balance.day_posted = @intCast(i64, julian_day_number);
+//             },
+//             .close_balance => |kind| {
+//                 if (kind == .ledger) {
+//                     var stmt = (try db.prepare_v2(
+//                         \\INSERT OR IGNORE INTO ofx_ledger_balance(account_id, day_posted, amount, currency_id)
+//                         \\VALUES (?, ?, ?, ?)
+//                     , null)) orelse return error.NoStatement;
+//                     defer stmt.finalize() catch {};
+//                     try stmt.bindInt64(1, account_id orelse return error.NoAccountId);
+//                     try stmt.bindInt64(2, balance.day_posted orelse return error.NoDayPosted);
+//                     try stmt.bindInt64(3, balance.amount orelse return error.NoAmount);
+//                     try stmt.bindInt64(4, if (currency) |c| c.id else return error.NoCurrency);
+//                     while ((try stmt.step()) != .Done) {}
+//                 }
+//                 balance = undefined;
+//             },
 
-            else => {},
-        }
-    }
+//             else => {},
+//         }
+//     }
 
-    try txn.commit();
-}
+//     try txn.commit();
+// }
 
-fn debugParseOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
-    var arena = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer arena.deinit();
+// fn debugParseOFX(ctx: *Context, res: *http.Response, req: http.Request) !void {
+//     var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+//     defer arena.deinit();
 
-    const headers = try req.headers(arena.allocator());
-    var multipart_iter = try multipart_form_data.parse(headers.get("Content-Type"), req.body());
+//     const headers = try req.headers(arena.allocator());
+//     var multipart_iter = try multipart_form_data.parse(headers.get("Content-Type"), req.body());
 
-    const src = while (try multipart_iter.next()) |part| {
-        const form_name = part.formName() orelse continue;
-        if (std.mem.eql(u8, "file", std.mem.trim(u8, form_name, "\""))) {
-            break part.body;
-        }
-    } else {
-        return error.InvalidInput; // TODO: Error 40x when input is invalid
-    };
+//     const src = while (try multipart_iter.next()) |part| {
+//         const form_name = part.formName() orelse continue;
+//         if (std.mem.eql(u8, "file", std.mem.trim(u8, form_name, "\""))) {
+//             break part.body;
+//         }
+//     } else {
+//         return error.InvalidInput; // TODO: Error 40x when input is invalid
+//     };
 
-    const ofx_events = try ofx_sgml.parse(arena.allocator(), src);
+//     const ofx_events = try ofx_sgml.parse(arena.allocator(), src);
 
-    try res.headers.put("Content-Type", "text/html");
-    var out = res.writer();
+//     try res.headers.put("Content-Type", "text/html");
+//     var out = res.writer();
 
-    try writeHTMLHeader(out, "Import OFX");
+//     try writeHTMLHeader(out, "Import OFX");
 
-    try out.writeAll(
-        \\<pre>
-    );
+//     try out.writeAll(
+//         \\<pre>
+//     );
 
-    var indent: usize = 0;
-    for (ofx_events) |event| {
-        if (event.isClose()) indent -|= 1;
+//     var indent: usize = 0;
+//     for (ofx_events) |event| {
+//         if (event.isClose()) indent -|= 1;
 
-        var i: usize = 0;
-        while (i < indent) : (i += 1) {
-            try out.writeAll("\t");
-        }
-        try out.print("{}<br>", .{event.fmtWithSrc(src)});
+//         var i: usize = 0;
+//         while (i < indent) : (i += 1) {
+//             try out.writeAll("\t");
+//         }
+//         try out.print("{}<br>", .{event.fmtWithSrc(src)});
 
-        if (event.isStart()) indent += 1;
-    }
+//         if (event.isStart()) indent += 1;
+//     }
 
-    try out.writeAll(
-        \\</pre>
-        \\</body>
-        \\</html>
-    );
-}
+//     try out.writeAll(
+//         \\</pre>
+//         \\</body>
+//         \\</html>
+//     );
+// }
 
-fn putFiOrg(db: *sqlite3.SQLite3, fid: []const u8, org: []const u8) !void {
-    var stmt = (try db.prepare_v2("INSERT OR IGNORE INTO ofx_financial_institutions(fid, org) VALUES (?, ?)", null)) orelse return error.NoStatement;
-    defer stmt.finalize() catch {};
-    try stmt.bindText(1, fid, .transient);
-    try stmt.bindText(2, org, .transient);
-    while ((try stmt.step()) != .Done) {}
-}
+// fn putFiOrg(db: *sqlite3.SQLite3, fid: []const u8, org: []const u8) !void {
+//     var stmt = (try db.prepare_v2("INSERT OR IGNORE INTO ofx_financial_institutions(fid, org) VALUES (?, ?)", null)) orelse return error.NoStatement;
+//     defer stmt.finalize() catch {};
+//     try stmt.bindText(1, fid, .transient);
+//     try stmt.bindText(2, org, .transient);
+//     while ((try stmt.step()) != .Done) {}
+// }
 
-fn getOrPutAccountByHash(db: *sqlite3.SQLite3, fid: []const u8, acctid: []const u8) !i64 {
-    var hash: [16]u8 = undefined;
-    var hasher = std.crypto.hash.Blake3.init(.{});
-    hasher.update(fid);
-    hasher.update(&.{0});
-    hasher.update(acctid);
-    hasher.final(&hash);
+// fn getOrPutAccountByHash(db: *sqlite3.SQLite3, fid: []const u8, acctid: []const u8) !i64 {
+//     var hash: [16]u8 = undefined;
+//     var hasher = std.crypto.hash.Blake3.init(.{});
+//     hasher.update(fid);
+//     hasher.update(&.{0});
+//     hasher.update(acctid);
+//     hasher.final(&hash);
 
-    var hash_buf: [40]u8 = undefined;
-    const hash_str = try std.fmt.bufPrintZ(&hash_buf, "blake3-{}", .{std.fmt.fmtSliceHexLower(&hash)});
+//     var hash_buf: [40]u8 = undefined;
+//     const hash_str = try std.fmt.bufPrintZ(&hash_buf, "blake3-{}", .{std.fmt.fmtSliceHexLower(&hash)});
 
-    {
-        var stmt = (try db.prepare_v2("INSERT OR IGNORE INTO ofx_accounts(fiid, hash) VALUES (?, ?)", null)) orelse return error.NoStatement;
-        defer stmt.finalize() catch {};
-        try stmt.bindText(1, fid, .transient);
-        try stmt.bindText(2, hash_str, .transient);
-        while ((try stmt.step()) != .Done) {}
-    }
+//     {
+//         var stmt = (try db.prepare_v2("INSERT OR IGNORE INTO ofx_accounts(fiid, hash) VALUES (?, ?)", null)) orelse return error.NoStatement;
+//         defer stmt.finalize() catch {};
+//         try stmt.bindText(1, fid, .transient);
+//         try stmt.bindText(2, hash_str, .transient);
+//         while ((try stmt.step()) != .Done) {}
+//     }
 
-    var stmt = (try db.prepare_v2("SELECT id FROM ofx_accounts WHERE hash LIKE ?", null)) orelse return error.NoStatement;
-    try stmt.bindText(1, hash_str, .transient);
-    while ((try stmt.step()) != .Done) {
-        const id = stmt.columnInt64(0);
-        return id;
-    }
-    return error.AccountNotFound;
-}
+//     var stmt = (try db.prepare_v2("SELECT id FROM ofx_accounts WHERE hash LIKE ?", null)) orelse return error.NoStatement;
+//     try stmt.bindText(1, hash_str, .transient);
+//     while ((try stmt.step()) != .Done) {
+//         const id = stmt.columnInt64(0);
+//         return id;
+//     }
+//     return error.AccountNotFound;
+// }
 
-const Currency = struct {
-    id: i64,
-    divisor: i64,
-};
+// const Currency = struct {
+//     id: i64,
+//     divisor: i64,
+// };
 
-fn getCurrencyByName(db: *sqlite3.SQLite3, name: []const u8) !Currency {
-    var stmt = (try db.prepare_v2("SELECT id, divisor FROM currencies WHERE name LIKE ?", null)) orelse return error.NoStatement;
-    try stmt.bindText(1, name, .transient);
-    while ((try stmt.step()) != .Done) {
-        return Currency{
-            .id = stmt.columnInt64(0),
-            .divisor = stmt.columnInt64(1),
-        };
-    }
-    return error.CurrencyNotFound;
-}
+// fn getCurrencyByName(db: *sqlite3.SQLite3, name: []const u8) !Currency {
+//     var stmt = (try db.prepare_v2("SELECT id, divisor FROM currencies WHERE name LIKE ?", null)) orelse return error.NoStatement;
+//     try stmt.bindText(1, name, .transient);
+//     while ((try stmt.step()) != .Done) {
+//         return Currency{
+//             .id = stmt.columnInt64(0),
+//             .divisor = stmt.columnInt64(1),
+//         };
+//     }
+//     return error.CurrencyNotFound;
+// }
 
 fn setupSchema(allocator: std.mem.Allocator, db: *sqlite3.SQLite3) !void {
-    var txn = try Transaction.begin(@src(), db);
+    var txn = try Transaction.begin(std.fmt.comptimePrint("{s}::{s}", .{ @src().file, @src().fn_name }), db);
     defer txn.deinit();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -722,28 +778,6 @@ pub const Blob = union(enum) {
     }
 };
 
-/// Expects an struct where the field names are files, and the values are Blobs
-const StaticFilesCaptures = struct { filename: []const u8 };
-fn staticFiles(comptime static_files: anytype) fn (*Context, *http.Response, http.Request, StaticFilesCaptures) http.Response.Error!void {
-    const Handler = struct {
-        fn handle(_: *Context, res: *http.Response, req: http.Request, captures: StaticFilesCaptures) http.Response.Error!void {
-            _ = req;
-
-            inline for (std.meta.fields(@TypeOf(static_files))) |field| {
-                if (std.mem.eql(u8, captures.filename, field.name)) {
-                    const static_file: Blob = @field(static_files, field.name);
-                    try res.headers.put("Content-Type", static_file.contentType());
-                    try res.writer().writeAll(static_file.data());
-                    return;
-                }
-            }
-
-            return res.notFound();
-        }
-    };
-    return Handler.handle;
-}
-
 fn writeHTMLHeader(out: anytype, page_title: []const u8) !void {
     try out.print(
         \\<!DOCTYPE html>
@@ -760,18 +794,18 @@ fn writeHTMLHeader(out: anytype, page_title: []const u8) !void {
     , .{page_title});
 }
 
-fn srcLineStr(comptime src: std.builtin.SourceLocation) *const [srcLineStrLen(src):0]u8 {
-    return std.fmt.comptimePrint("{s}:{}", .{ src.file, src.line });
-}
+// fn srcLineStr(comptime src: std.builtin.SourceLocation) *const [srcLineStrLen(src):0]u8 {
+//     return std.fmt.comptimePrint("{s}:{}", .{ src.file, src.line });
+// }
 
-fn srcLineStrLen(comptime src: std.builtin.SourceLocation) usize {
-    return src.file.len + std.math.log10(src.line) + 2;
-}
+// fn srcLineStrLen(comptime src: std.builtin.SourceLocation) usize {
+//     return src.file.len + std.math.log10(src.line) + 2;
+// }
 
 fn sqliteLogCallback(userdata: *anyopaque, errcode: c_int, msg: ?[*:0]const u8) callconv(.C) void {
     _ = userdata;
     std.log.scoped(.sqlite3).err("{s}: {?s}", .{ sqlite3.errstr(errcode), msg });
 }
 
-// TODO:
-extern fn sqlite3_last_insert_rowid(*sqlite3.SQLite3) i64;
+// // TODO:
+// extern fn sqlite3_last_insert_rowid(*sqlite3.SQLite3) i64;
