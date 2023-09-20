@@ -2,17 +2,22 @@
 	.name = "my-finances-app",
 	.version = "0.1.0",
 	.dependencies = .{
-        .zap = .{
-            .url = "https://github.com/renerocksai/zap/archive/db6496cd7afc6bac50da563936021ee28f591dc1.tar.gz",
-            .hash = "12203791cdbf4ebc2692bbd2ce790fedbc2e7295eec3efd7812621aa35a5ce83767a",
-        },
-        .@"facil.io" = .{
-            .url = "https://github.com/renerocksai/facil.io/archive/2c04cd1949328dd62fe5d262b9cc930e54392ab8.tar.gz",
-            .hash = "12209d3b552145f24431e5a2e6a4ad59ceaa9656f7fba8af7a8aa704a8784a79f55d",
-        },
 		.sqlite3 = .{
-			.url = "https://github.com/leroycep/sqlite-zig/archive/1d4cd78c5b2ebd311265baba608f301fcd6fac05.tar.gz",
-			.hash = "12205c00ef21065c495c2668e7f02214226847041bd758af7aa93bd4872fac39cf89",
+			.url = "https://github.com/leroycep/sqlite-zig/archive/9e654c51110445c64c155605fe0d063675110952.tar.gz",
+			.hash = "1220570c016ad2b947d79972702a2715c02a9fe9b432d49b06dba995fac58f125c6c",
 		},
+        .zigimg = .{
+            .url = "https://github.com/zigimg/zigimg/archive/57827775fc3659828af7dcd1b15d65d006573651.tar.gz",
+            .hash = "12208c69b00540fe3f38893800fb6c89a9fe27b4a687de5d0462e498a43db4caeec0",
+        },
+        .utils = .{
+            .url = "https://github.com/leroycep/utils.zig/archive/a6b46259819ecb15c89107003d1c38bad211a7d1.tar.gz",
+            .hash = "1220c63bc35ec39c6cd7169d4f7c619c189ae289be9038704b5bc556975fe1041841",
+        },
+        .glfw = .{
+            .url = "https://github.com/leroycep/glfw/archive/80254d41f0638dc0751225b92fd2b3586b7aeca5.tar.gz",
+            .hash = "12206ebe47a5a339ef7a53a7250a9920a6aba3d972812fc52503f8e83f4aca64c0b4",
+        },
+
 	},
 }

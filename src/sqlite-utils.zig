@@ -101,7 +101,7 @@ fn dbTables(allocator: std.mem.Allocator, db: *sqlite3.SQLite3) !std.StringHashM
         const schema = try allocator.dupeZ(u8, stmt.columnText(0).?);
         const name = try allocator.dupeZ(u8, stmt.columnText(1).?);
         const table_type = std.meta.stringToEnum(TableInfo.Type, stmt.columnText(2).?).?;
-        const ncol = @intCast(u32, stmt.columnInt(3));
+        const ncol = @as(u32, @intCast(stmt.columnInt(3)));
         const without_rowid = stmt.columnInt(4) != 0;
         const strict = stmt.columnInt(5) != 0;
         const sql = try allocator.dupeZ(u8, stmt.columnText(6).?);
@@ -138,7 +138,7 @@ fn dbRebuildTable(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristine: 
         defer stmt.finalize() catch unreachable;
         try stmt.bindText(1, new_table_info.name, .transient);
         while ((try stmt.step()) != .Done) {
-            try common_cols_list.putNoClobber(try allocator.dupeZ(u8, stmt.columnText(0).?), false);
+            try common_cols_list.putNoClobber(try allocator.dupe(u8, stmt.columnText(0).?), false);
         }
     }
 
