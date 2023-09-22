@@ -47,6 +47,7 @@ pub fn main() anyerror!void {
 
     var app = try App.init(gpa, db, .{});
     defer app.deinit();
+    app.db_path = db_path_z;
 
     // Main loop
     while (c.glfwWindowShouldClose(app.window) != c.GLFW_TRUE) {
@@ -55,6 +56,8 @@ pub fn main() anyerror!void {
         gl.enable(gl.DEPTH_TEST);
         gl.clearColor(0, 0, 0, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        app.render();
 
         c.glfwSwapBuffers(app.window);
     }

@@ -2,6 +2,12 @@ gpa: std.mem.Allocator,
 db: *sqlite3.SQLite3,
 window: *c.GLFWwindow,
 
+canvas: Canvas,
+
+db_path: []const u8 = "",
+
+const App = @This();
+
 pub const InitOptions = struct {
     visible: bool = true,
     resizable: bool = true,
@@ -20,8 +26,9 @@ pub fn init(gpa: std.mem.Allocator, db: *sqlite3.SQLite3, options: InitOptions) 
     c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 0);
 
     //  Open window
-    const window = c.glfwCreateWindow(640, 640, "Capture - Scatterometer", null, null) orelse return error.GlfwCreateWindow;
+    const window = c.glfwCreateWindow(640, 640, "My Finances App", null, null) orelse return error.GlfwCreateWindow;
     errdefer c.glfwDestroyWindow(window);
+    _ = c.glfwSetFramebufferSizeCallback(window, &glfw_framebuffer_size_callback);
 
     c.glfwMakeContextCurrent(window);
 
@@ -31,18 +38,50 @@ pub fn init(gpa: std.mem.Allocator, db: *sqlite3.SQLite3, options: InitOptions) 
     // Set up input callbacks
     c.glfwSetWindowUserPointer(window, app);
 
+    const canvas = try Canvas.init(gpa, .{});
+    errdefer canvas.deinit(gpa);
+
     app.* = .{
         .gpa = gpa,
         .db = db,
         .window = window,
+
+        .canvas = canvas,
     };
 
     return app;
 }
 
 pub fn deinit(app: *@This()) void {
+    app.canvas.deinit(app.gpa);
     c.glfwDestroyWindow(app.window);
     app.gpa.destroy(app);
+}
+
+pub fn render(app: *@This()) void {
+    var window_size: [2]c_int = undefined;
+    c.glfwGetWindowSize(app.window, &window_size[0], &window_size[1]);
+    const window_sizef = [2]f32{
+        @floatFromInt(window_size[0]),
+        @floatFromInt(window_size[1]),
+    };
+    const projection = utils.mat4.orthographic(
+        f32,
+        -0.5,
+        (window_sizef[0] - 1.0) + 0.5,
+        (window_sizef[1] - 1.0) + 0.5,
+        -0.5,
+        -1,
+        1,
+    );
+
+    app.canvas.begin(.{ .projection = projection });
+    app.canvas.printText("db_path = \"{}\"", .{std.zig.fmtEscapes(app.db_path)}, .{
+        .pos = .{ 0, 0 },
+        .baseline = .top,
+        .@"align" = .left,
+    });
+    app.canvas.end();
 }
 
 const GlBindingLoader = struct {
@@ -57,8 +96,21 @@ const GlBindingLoader = struct {
     }
 };
 
+fn glfw_framebuffer_size_callback(window: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.C) void {
+    const app = @as(*App, @alignCast(@ptrCast(c.glfwGetWindowUserPointer(window))));
+    _ = app;
+    gl.viewport(
+        0,
+        0,
+        @intCast(width),
+        @intCast(height),
+    );
+}
+
 const std = @import("std");
 const sqlite3 = @import("sqlite3");
+const gl = @import("gl");
+const utils = @import("utils");
 const c = @import("./c.zig");
 const main = @import("./main.zig");
-const gl = @import("gl");
+const Canvas = @import("./Canvas.zig");
