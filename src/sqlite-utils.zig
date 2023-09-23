@@ -55,7 +55,7 @@ pub fn ensureSchema(allocator: std.mem.Allocator, db: *sqlite3.SQLite3, pristine
     try txn.commit();
 }
 
-const TableInfo = struct {
+pub const TableInfo = struct {
     schema: [:0]const u8,
     name: [:0]const u8,
     table_type: Type,
@@ -83,7 +83,7 @@ const TableInfo = struct {
 };
 
 /// - sqlite 3.37 introduced `PRAGMA table_list`: https://sqlite.org/pragma.html#pragma_table_list
-fn dbTables(allocator: std.mem.Allocator, db: *sqlite3.SQLite3) !std.StringHashMap(TableInfo) {
+pub fn dbTables(allocator: std.mem.Allocator, db: *sqlite3.SQLite3) !std.StringHashMap(TableInfo) {
     var stmt = (try db.prepare_v2(
         \\ SELECT tl.schema, tl.name, tl.type, tl.ncol, tl.wr, tl.strict, schema.sql
         \\ FROM pragma_table_list AS tl

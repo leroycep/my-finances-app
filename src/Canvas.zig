@@ -461,7 +461,7 @@ pub const TextOptions = struct {
     };
 };
 
-pub fn writeText(this: *@This(), text: []const u8, options: TextOptions) void {
+pub fn writeText(this: *@This(), text: []const u8, options: TextOptions) [2]f32 {
     const text_size = this.font.textSize(text, options.scale);
 
     var x: f32 = switch (options.@"align") {
@@ -480,9 +480,10 @@ pub fn writeText(this: *@This(), text: []const u8, options: TextOptions) void {
         .color = options.color,
     });
     text_writer.writer().writeAll(text) catch {};
+    return text_writer.size;
 }
 
-pub fn printText(this: *@This(), comptime fmt: []const u8, args: anytype, options: TextOptions) void {
+pub fn printText(this: *@This(), comptime fmt: []const u8, args: anytype, options: TextOptions) [2]f32 {
     const text_size = this.font.fmtTextSize(fmt, args, options.scale);
 
     const x: f32 = switch (options.@"align") {
@@ -502,6 +503,7 @@ pub fn printText(this: *@This(), comptime fmt: []const u8, args: anytype, option
         .color = options.color,
     });
     text_writer.writer().print(fmt, args) catch {};
+    return text_writer.size;
 }
 
 pub fn end(this: *@This()) void {
@@ -523,6 +525,7 @@ pub const TextWriter = struct {
     options: Options,
     direction: f32,
     current_pos: [2]f32,
+    size: [2]f32 = .{ 0, 0 },
 
     pub const Options = struct {
         pos: [2]f32 = .{ 0, 0 },
@@ -534,6 +537,11 @@ pub const TextWriter = struct {
         if (character == '\n') {
             this.current_pos[1] += this.canvas.font.lineHeight * this.options.scale;
             this.current_pos[0] = this.options.pos[0];
+
+            this.size = .{
+                @max(this.current_pos[0] - this.options.pos[0], this.size[0]),
+                @max(this.current_pos[1] - this.options.pos[1] + this.canvas.font.lineHeight * this.options.scale, this.size[1]),
+            };
             return;
         }
         const glyph = this.canvas.font.glyphs.get(character) orelse return;
@@ -570,6 +578,10 @@ pub const TextWriter = struct {
         });
 
         this.current_pos[0] += this.direction * xadvance;
+        this.size = .{
+            @max(this.current_pos[0] - this.options.pos[0], this.size[0]),
+            @max(this.current_pos[1] - this.options.pos[1] + this.canvas.font.lineHeight * this.options.scale, this.size[1]),
+        };
     }
 
     pub fn addText(this: *@This(), text: []const u8) void {
