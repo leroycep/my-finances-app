@@ -3,11 +3,11 @@ const std = @import("std");
 const testing = std.testing;
 
 pub fn unixTimestampToJulianDayNumber(unix_timestamp: i64) u64 {
-    return @intCast(u64, @divFloor(unix_timestamp + std.time.s_per_day / 2, std.time.s_per_day) + 2440587);
+    return @as(u64, @intCast(@divFloor(unix_timestamp + std.time.s_per_day / 2, std.time.s_per_day) + 2440587));
 }
 
 pub fn julianDayNumberToUnixTimestamp(julian_day_number: u64) i64 {
-    const J = @intCast(i64, julian_day_number);
+    const J = @as(i64, @intCast(julian_day_number));
     return (J - 2440587) * std.time.s_per_day - (std.time.s_per_day / 2);
 }
 
@@ -22,7 +22,7 @@ pub const DayOfWeek = enum(u3) {
 };
 
 pub fn julianDayNumberToDayOfWeek(julian_day_number: u64) u3 {
-    return @intCast(u3, (julian_day_number + 1) % 7);
+    return @as(u3, @intCast((julian_day_number + 1) % 7));
 }
 
 pub const GregorianDate = packed struct {
@@ -53,7 +53,7 @@ pub const GregorianDate = packed struct {
             if (this.date.year < 0) {
                 try writer.print("{:0>4}", .{this.date.year});
             } else {
-                try writer.print("{:0>4}", .{@intCast(u16, this.date.year)});
+                try writer.print("{:0>4}", .{@as(u16, @intCast(this.date.year))});
             }
             try writer.print("-{:0>2}-{:0>2}", .{ this.date.month, this.date.day });
         }
@@ -63,9 +63,9 @@ pub const GregorianDate = packed struct {
 /// Valid for Gregorian dates after November 23, -4713
 pub fn gregorianDateToJulianDayNumber(gregorian_date: GregorianDate) u64 {
     std.debug.assert(gregorian_date.year > -4713 or (gregorian_date.month >= 11 and gregorian_date.day > 23));
-    const Y = @intCast(i65, gregorian_date.year);
-    const M = @intCast(i65, gregorian_date.month);
-    const D = @intCast(i65, gregorian_date.day);
+    const Y = @as(i65, @intCast(gregorian_date.year));
+    const M = @as(i65, @intCast(gregorian_date.month));
+    const D = @as(i65, @intCast(gregorian_date.day));
 
     const m = @divFloor(M - 14, 12);
 
@@ -74,11 +74,11 @@ pub fn gregorianDateToJulianDayNumber(gregorian_date: GregorianDate) u64 {
     const term3 = @divFloor(3 * @divFloor(Y + 4900 + m, 100), 4);
 
     // 32077 is the constant, wikipedia gave 32075
-    return @intCast(u64, term1 + term2 - term3 + D - 32077);
+    return @as(u64, @intCast(term1 + term2 - term3 + D - 32077));
 }
 
 pub fn julianDayNumberToGregorianDate(julian_day_number: u64) GregorianDate {
-    const J = @intCast(i64, julian_day_number);
+    const J = @as(i64, @intCast(julian_day_number));
 
     // Parameters from https://en.wikipedia.org/wiki/Julian_day#Julian_or_Gregorian_calendar_from_Julian_day_number
     const y = 4716;
@@ -105,9 +105,9 @@ pub fn julianDayNumberToGregorianDate(julian_day_number: u64) GregorianDate {
     const Y = @divFloor(e, p) - y + @divFloor(n + m - M, n);
 
     return .{
-        .year = @intCast(i16, Y),
-        .month = @intCast(u4, M),
-        .day = @intCast(u5, D),
+        .year = @as(i16, @intCast(Y)),
+        .month = @as(u4, @intCast(M)),
+        .day = @as(u5, @intCast(D)),
     };
 }
 

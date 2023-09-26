@@ -4,6 +4,10 @@ current_texture: ?gl.Uint,
 current_colormap: gl.Uint,
 vertices: std.ArrayListUnmanaged(Vertex),
 transform_stack: std.ArrayListUnmanaged([4][4]f32),
+scissor_stack: std.ArrayListUnmanaged([2][2]f32),
+
+window_size: [2]f32 = .{ 1, 1 },
+framebuffer_size: [2]f32 = .{ 1, 1 },
 
 blank_texture: gl.Uint,
 default_colormap: gl.Uint,
@@ -12,6 +16,8 @@ font_pages: std.AutoHashMapUnmanaged(u32, FontPage),
 
 vbo: gl.Uint,
 
+pub const colormaps = @import("./Canvas/colormaps.zig");
+
 const Canvas = @This();
 
 pub fn init(
@@ -19,7 +25,8 @@ pub fn init(
     options: struct {
         vertex_buffer_size: usize = 16_384,
         transform_stack_size: usize = 128,
-        default_colormap: []const [3]f32 = &@import("./Canvas/colormaps.zig").turbo_srgb,
+        scissor_stack_size: usize = 32,
+        default_colormap: []const [3]f32 = &colormaps.turbo_srgb,
     },
 ) !@This() {
     // Text shader
@@ -87,6 +94,9 @@ pub fn init(
 
     var transform_stack = try std.ArrayListUnmanaged([4][4]f32).initCapacity(allocator, options.transform_stack_size);
     errdefer transform_stack.deinit(allocator);
+
+    var scissor_stack = try std.ArrayListUnmanaged([2][2]f32).initCapacity(allocator, options.scissor_stack_size);
+    errdefer scissor_stack.deinit(allocator);
 
     var blank_texture: gl.Uint = undefined;
     gl.genTextures(1, &blank_texture);
@@ -192,6 +202,7 @@ pub fn init(
         .current_colormap = colormap_texture,
         .vertices = vertices,
         .transform_stack = transform_stack,
+        .scissor_stack = scissor_stack,
 
         .blank_texture = blank_texture,
         .default_colormap = colormap_texture,
@@ -206,6 +217,7 @@ pub fn deinit(this: *@This(), allocator: std.mem.Allocator) void {
     gl.deleteProgram(this.program);
     this.vertices.deinit(allocator);
     this.transform_stack.deinit(allocator);
+    this.scissor_stack.deinit(allocator);
     this.font.deinit();
 
     var page_name_iter = this.font_pages.iterator();
@@ -218,12 +230,46 @@ pub fn deinit(this: *@This(), allocator: std.mem.Allocator) void {
 }
 
 pub const BeginOptions = struct {
-    projection: [4][4]f32,
+    window_size: [2]f32,
+    framebuffer_size: [2]f32,
 };
 
 pub fn begin(this: *@This(), options: BeginOptions) void {
+    this.window_size = options.window_size;
+    this.framebuffer_size = options.framebuffer_size;
+
+    // The -0.5 here ensures that a pixel drawn at <0, 0> will be "centered" on <0, 0>. Prevents images
+    // from shifting around as much as the viewport changes.
+    const projection = utils.mat4.orthographic(
+        f32,
+        -0.5,
+        (this.window_size[0] - 1.0) + 0.5,
+        (this.window_size[1] - 1.0) + 0.5,
+        -0.5,
+        -1,
+        1,
+    );
+
     this.transform_stack.shrinkRetainingCapacity(0);
-    this.transform_stack.appendAssumeCapacity(options.projection);
+    this.transform_stack.appendAssumeCapacity(projection);
+
+    const scissor = [2][2]f32{
+        .{ 0, 0 },
+        this.window_size,
+    };
+    const pixel_size = [2]f32{
+        this.framebuffer_size[0] / this.window_size[0],
+        this.framebuffer_size[1] / this.window_size[1],
+    };
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(
+        @intFromFloat(scissor[0][0] * pixel_size[0]),
+        @intFromFloat((this.window_size[1] - scissor[0][1] - scissor[1][1]) * pixel_size[1]),
+        @intFromFloat(scissor[1][0] * pixel_size[0]),
+        @intFromFloat(scissor[1][1] * pixel_size[1]),
+    );
+    this.scissor_stack.shrinkRetainingCapacity(0);
+    this.scissor_stack.appendAssumeCapacity(scissor);
 
     // TEXTURE_UNIT0
     gl.useProgram(this.program);
@@ -260,6 +306,67 @@ pub fn popTransform(this: *@This()) void {
     }
     _ = this.transform_stack.pop();
     gl.uniformMatrix4fv(this.uniforms.projection, 1, gl.FALSE, &this.transform_stack.items[this.transform_stack.items.len - 1][0]);
+}
+
+pub fn pushScissor(this: *@This(), pos: [2]f32, size: [2]f32) void {
+    std.debug.assert(this.scissor_stack.items.len > 0);
+    if (this.vertices.items.len > 0) {
+        this.flush();
+    }
+
+    // constrain scissor to previous scissor
+    const prev_scissor = this.scissor_stack.items[this.scissor_stack.items.len - 1];
+    const prev_bottom_right = [2]f32{
+        prev_scissor[0][0] + prev_scissor[1][0],
+        prev_scissor[0][1] + prev_scissor[1][1],
+    };
+    const top_left = .{
+        std.math.clamp(pos[0], prev_scissor[0][0], prev_bottom_right[0]),
+        std.math.clamp(pos[1], prev_scissor[0][1], prev_bottom_right[1]),
+    };
+    const bottom_right = .{
+        std.math.clamp(pos[0] + size[0], prev_scissor[0][0], prev_bottom_right[0]),
+        std.math.clamp(pos[1] + size[1], prev_scissor[0][1], prev_bottom_right[1]),
+    };
+    const scissor = .{
+        top_left,
+        .{
+            bottom_right[0] - top_left[0],
+            bottom_right[1] - top_left[1],
+        },
+    };
+
+    // update gl.scissor
+    const pixel_size = [2]f32{
+        this.framebuffer_size[0] / this.window_size[0],
+        this.framebuffer_size[1] / this.window_size[1],
+    };
+    gl.scissor(
+        @intFromFloat(scissor[0][0] * pixel_size[0]),
+        @intFromFloat((this.window_size[1] - scissor[0][1] - scissor[1][1]) * pixel_size[1]),
+        @intFromFloat(scissor[1][0] * pixel_size[0]),
+        @intFromFloat(scissor[1][1] * pixel_size[1]),
+    );
+    this.scissor_stack.appendAssumeCapacity(scissor);
+}
+
+pub fn popScissor(this: *@This()) void {
+    std.debug.assert(this.scissor_stack.items.len > 0);
+    if (this.vertices.items.len > 0) {
+        this.flush();
+    }
+    _ = this.scissor_stack.pop();
+    const pixel_size = [2]f32{
+        this.framebuffer_size[0] / this.window_size[0],
+        this.framebuffer_size[1] / this.window_size[1],
+    };
+    const scissor = this.scissor_stack.items[this.scissor_stack.items.len - 1];
+    gl.scissor(
+        @intFromFloat(scissor[0][0] * pixel_size[0]),
+        @intFromFloat((this.window_size[1] - scissor[0][1] - scissor[1][1]) * pixel_size[1]),
+        @intFromFloat(scissor[1][0] * pixel_size[0]),
+        @intFromFloat(scissor[1][1] * pixel_size[1]),
+    );
 }
 
 pub const RectOptions = struct {
@@ -503,6 +610,7 @@ pub fn printText(this: *@This(), comptime fmt: []const u8, args: anytype, option
         .color = options.color,
     });
     text_writer.writer().print(fmt, args) catch {};
+
     return text_writer.size;
 }
 
@@ -608,7 +716,7 @@ pub fn line(this: *@This(), pos1: [2]f32, pos2: [2]f32, options: struct {
     width: f32 = 1,
     color: [4]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF },
 }) void {
-    if (this.vertices.unusedCapacitySlice().len <= 3 or this.current_texture != null) {
+    if (this.vertices.unusedCapacitySlice().len < 6 or this.current_texture != null) {
         this.flush();
         this.current_texture = null;
     }
@@ -696,7 +804,7 @@ pub fn line(this: *@This(), pos1: [2]f32, pos2: [2]f32, options: struct {
     });
 }
 
-fn flush(this: *@This()) void {
+pub fn flush(this: *@This()) void {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.current_texture orelse this.blank_texture);
     defer {
