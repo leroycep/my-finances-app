@@ -1,5 +1,6 @@
 element: Element,
 text: []u8,
+color: [4]u8 = .{ 0xFF, 0xFF, 0xFF, 0xFF },
 
 const INTERFACE = Element.Interface{
     .destroy_fn = destroy,
@@ -54,6 +55,7 @@ fn render(element: *Element, canvas: *Canvas, rect: Rect) void {
             rect.pos[1] + PADDING[1],
         },
         .baseline = .top,
+        .color = this.color,
     });
 }
 

@@ -75,6 +75,27 @@ pub fn init(gpa: std.mem.Allocator, db: *sqlite3.SQLite3, options: InitOptions) 
     currencies_button.on_click_fn = onCurrenciesButtonPressed;
     try flexbox.appendChild(&currencies_button.element);
 
+    const ofx_accounts_button = try app.ui_manager.create(ui.Button);
+    defer ofx_accounts_button.element.release();
+    ofx_accounts_button.text = "OFX accounts";
+    ofx_accounts_button.userdata = app;
+    ofx_accounts_button.on_click_fn = onOFXAccountsButtonPressed;
+    try flexbox.appendChild(&ofx_accounts_button.element);
+
+    const ledger_balances_button = try app.ui_manager.create(ui.Button);
+    defer ledger_balances_button.element.release();
+    ledger_balances_button.text = "Ledger Balances";
+    ledger_balances_button.userdata = app;
+    ledger_balances_button.on_click_fn = onLedgerBalancesButtonPressed;
+    try flexbox.appendChild(&ledger_balances_button.element);
+
+    const ofx_transactions_button = try app.ui_manager.create(ui.Button);
+    defer ofx_transactions_button.element.release();
+    ofx_transactions_button.text = "OFX Transactions";
+    ofx_transactions_button.userdata = app;
+    ofx_transactions_button.on_click_fn = onOFXTransactionsButtonPressed;
+    try flexbox.appendChild(&ofx_transactions_button.element);
+
     app.ui_manager.setRoot(&flexbox.element);
 
     return app;
@@ -110,6 +131,167 @@ pub fn onCurrenciesButtonPressed(userdata: ?*anyopaque, _: *ui.Button) void {
         const divisor = stmt.columnInt64(3);
 
         const row_text = std.fmt.allocPrint(app.gpa, "{?} | {?} | {?s} | {?}", .{ id, date_opened.fmtISO(), name, divisor }) catch @panic("OOM");
+
+        const label = app.ui_manager.create(ui.Label) catch @panic("OOM");
+        defer label.element.release();
+        app.gpa.free(label.text);
+        label.text = row_text;
+        flexbox.appendChild(&label.element) catch @panic("OOM");
+    }
+
+    app.ui_manager.addPopup(&popup.element) catch @panic("OOM");
+}
+
+pub fn onOFXAccountsButtonPressed(userdata: ?*anyopaque, _: *ui.Button) void {
+    const app: *App = @ptrCast(@alignCast(userdata.?));
+
+    const popup = app.ui_manager.create(ui.Popup) catch @panic("OOM");
+    defer popup.element.release();
+    popup.title = "OFX Accounts";
+    popup.element.rect.size = .{ 400, 400 };
+
+    const flexbox = app.ui_manager.create(ui.Flexbox) catch @panic("OOM");
+    defer flexbox.element.release();
+    popup.setChild(&flexbox.element);
+
+    var stmt = (app.db.prepare_v2(
+        \\SELECT ofx_accounts.id, ofx_accounts.hash, ofx_account_names.name
+        \\FROM ofx_accounts
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_accounts.id
+    , null) catch unreachable).?;
+    defer stmt.finalize() catch unreachable;
+
+    while ((stmt.step() catch unreachable) != .Done) {
+        const account_id = stmt.columnInt64(0);
+        const ofx_hash = stmt.columnText(1);
+        const account_name = stmt.columnText(2);
+
+        const row_text = std.fmt.allocPrint(app.gpa, "{?} | {?s} | {?s}", .{ account_id, account_name, ofx_hash }) catch @panic("OOM");
+
+        const label = app.ui_manager.create(ui.Label) catch @panic("OOM");
+        defer label.element.release();
+        app.gpa.free(label.text);
+        label.text = row_text;
+        flexbox.appendChild(&label.element) catch @panic("OOM");
+    }
+
+    app.ui_manager.addPopup(&popup.element) catch @panic("OOM");
+}
+
+pub fn onLedgerBalancesButtonPressed(userdata: ?*anyopaque, _: *ui.Button) void {
+    const app: *App = @ptrCast(@alignCast(userdata.?));
+
+    const popup = app.ui_manager.create(ui.Popup) catch @panic("OOM");
+    defer popup.element.release();
+    popup.title = "OFX Accounts";
+    popup.element.rect.size = .{ 400, 400 };
+
+    const flexbox = app.ui_manager.create(ui.Flexbox) catch @panic("OOM");
+    defer flexbox.element.release();
+    popup.setChild(&flexbox.element);
+
+    var stmt = (app.db.prepare_v2(
+        \\SELECT
+        \\  ofx_ledger_balance.day_posted,
+        \\  max(ofx_running_balances.day_posted),
+        \\  COALESCE(ofx_account_names.name, ofx_accounts.hash) AS hash_or_name,
+        \\  ofx_ledger_balance.amount,
+        \\  ofx_running_balances.balance,
+        \\  currencies.name,
+        \\  currencies.divisor
+        \\FROM ofx_ledger_balance
+        \\LEFT JOIN ofx_accounts ON ofx_accounts.id = ofx_ledger_balance.account_id
+        \\LEFT JOIN currencies ON currencies.id = ofx_ledger_balance.currency_id
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_ledger_balance.account_id
+        \\LEFT JOIN ofx_running_balances ON ofx_running_balances.account_id = ofx_ledger_balance.account_id AND (ofx_running_balances.day_posted <= ofx_ledger_balance.day_posted)
+        \\GROUP BY ofx_ledger_balance.day_posted, hash_or_name, ofx_ledger_balance.currency_id
+        \\ORDER BY ofx_ledger_balance.day_posted DESC
+    , null) catch unreachable).?;
+    defer stmt.finalize() catch {};
+    while ((stmt.step() catch return) != .Done) {
+        // TODO: sqlite3 fix `columnText` null pointer seg fault
+        const day_posted = date_util.julianDayNumberToGregorianDate(@as(u64, @intCast(stmt.columnInt64(0))));
+        const latest_balance_day = date_util.julianDayNumberToGregorianDate(@as(u64, @intCast(stmt.columnInt64(1))));
+        const account_name = stmt.columnText(2);
+        const ledger_balance = stmt.columnInt64(3);
+        const running_balance = stmt.columnInt64(4);
+        const currency_name = stmt.columnText(5);
+        const currency_divisor = stmt.columnInt64(6);
+
+        const difference = ledger_balance - running_balance;
+        const row_text = std.fmt.allocPrint(app.gpa, "{?} | {?s} | {d}.{d} | {} | {d}.{d} | {?s} | {d}.{d}", .{
+            day_posted.fmtISO(),
+            account_name,
+            @divTrunc(ledger_balance, currency_divisor),
+            @as(u64, @intCast(@mod(ledger_balance, currency_divisor))),
+            latest_balance_day.fmtISO(),
+            @divTrunc(running_balance, currency_divisor),
+            @as(u64, @intCast(@mod(running_balance, currency_divisor))),
+            currency_name,
+            @divTrunc(difference, currency_divisor),
+            @as(u64, @intCast(@mod(difference, currency_divisor))),
+        }) catch @panic("OOM");
+
+        const label = app.ui_manager.create(ui.Label) catch @panic("OOM");
+        defer label.element.release();
+        app.gpa.free(label.text);
+        label.text = row_text;
+        label.color = if (difference == 0) [4]u8{ 0xFF, 0xFF, 0xFF, 0xFF } else [4]u8{ 0xFF, 0x00, 0x00, 0xFF };
+        flexbox.appendChild(&label.element) catch @panic("OOM");
+    }
+
+    app.ui_manager.addPopup(&popup.element) catch @panic("OOM");
+}
+
+pub fn onOFXTransactionsButtonPressed(userdata: ?*anyopaque, _: *ui.Button) void {
+    const app: *App = @ptrCast(@alignCast(userdata.?));
+
+    const popup = app.ui_manager.create(ui.Popup) catch @panic("OOM");
+    defer popup.element.release();
+    popup.title = "OFX Accounts";
+    popup.element.rect.size = .{ 400, 400 };
+
+    const flexbox = app.ui_manager.create(ui.Flexbox) catch @panic("OOM");
+    defer flexbox.element.release();
+    popup.setChild(&flexbox.element);
+
+    var stmt = (app.db.prepare_v2(
+        \\SELECT
+        \\  ofx_transactions.account_id,
+        \\  ofx_transactions.id,
+        \\  day_posted,
+        \\  COALESCE(ofx_account_names.name, ofx_accounts.hash),
+        \\  amount,
+        \\  currencies.name,
+        \\  currencies.divisor,
+        \\  description
+        \\FROM ofx_transactions
+        \\LEFT JOIN ofx_accounts ON ofx_accounts.id = ofx_transactions.account_id
+        \\LEFT JOIN currencies ON currencies.id = currency_id
+        \\LEFT JOIN ofx_account_names ON ofx_account_names.account_id = ofx_accounts.id
+        \\ORDER BY day_posted DESC
+    , null) catch unreachable).?;
+    defer stmt.finalize() catch {};
+    while ((stmt.step() catch unreachable) != .Done) {
+        const account_id = stmt.columnInt64(0);
+        const id = stmt.columnInt64(1);
+        const day_posted = date_util.julianDayNumberToGregorianDate(@as(u64, @intCast(stmt.columnInt64(2))));
+        const account_hash = stmt.columnText(3);
+        const amount = stmt.columnInt64(4);
+        const currency_name = stmt.columnText(5);
+        const currency_divisor = stmt.columnInt64(6);
+        const description = stmt.columnText(7);
+
+        const row_text = std.fmt.allocPrint(app.gpa, "{d} | {d} | {} | {?s} | {d}.{d} {?s} | {?s}", .{
+            account_id,
+            id,
+            day_posted.fmtISO(),
+            account_hash,
+            @divTrunc(amount, currency_divisor),
+            @as(u64, @intCast(@mod(amount, currency_divisor))),
+            currency_name,
+            description,
+        }) catch unreachable;
 
         const label = app.ui_manager.create(ui.Label) catch @panic("OOM");
         defer label.element.release();
